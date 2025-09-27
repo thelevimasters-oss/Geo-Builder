@@ -454,7 +454,8 @@ def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
             if logger: logger(f"PyMuPDF text extraction failed: {e}")
     if fitz is not None and pytesseract is not None:
         if not HAVE_PIL:
-            if logger: logger("OCR skipped: pillow not installed.")
+            if logger:
+                logger("OCR skipped: Pillow is not installed. Install the Pillow package to re-enable OCR fallback.")
             return text
         try:
             doc = fitz.open(str(pdf_path))
