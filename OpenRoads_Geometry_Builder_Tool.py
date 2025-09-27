@@ -953,11 +953,67 @@ class App(BaseTk):
         self._settings_btn.pack(side="right", padx=16)
         card = tk.Frame(self, bg=PANEL_DARK, highlightthickness=1, highlightbackground=PANEL_BORDER, bd=0)
         card.pack(padx=22, pady=(16,0), fill="both", expand=True)
-        self.notebook = ttk.Notebook(card); self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
-        try: ttk.Style(self).theme_use("clam")
-        except: pass
-        tab_excel = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_excel_tab(tab_excel); self.notebook.add(tab_excel, text="Excel → XML")
-        tab_deed  = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_deed_tab(tab_deed);  self.notebook.add(tab_deed, text="From Deed PDF")
+        notebook_style = ttk.Style(self)
+        try: notebook_style.theme_use("clam")
+        except tk.TclError:
+            pass
+        tab_bg = PANEL_DARK
+        tab_fg = TEXT_SOFT
+        if THEME_MODE == "dark":
+            tab_selected_bg = GPI_HL
+            tab_selected_fg = GPI_GREEN
+        else:
+            tab_selected_bg = GPI_GREEN
+            tab_selected_fg = "#FFFFFF"
+        notebook_style.configure(
+            "GPI.TNotebook",
+            background=PANEL_DARK,
+            borderwidth=0,
+            tabmargins=(12, 12, 12, 0),
+        )
+        notebook_style.configure(
+            "GPI.TNotebook.Tab",
+            background=tab_bg,
+            foreground=tab_fg,
+            font=("Segoe UI", 11, "bold"),
+            padding=(20, 12),
+            borderwidth=0,
+        )
+        notebook_style.map(
+            "GPI.TNotebook.Tab",
+            background=[("selected", tab_selected_bg), ("active", tab_selected_bg)],
+            foreground=[("selected", tab_selected_fg), ("active", tab_selected_fg)],
+            padding=[("selected", (20, 14))],
+        )
+        notebook_style.layout(
+            "GPI.TNotebook.Tab",
+            [
+                (
+                    "Notebook.tab",
+                    {
+                        "sticky": "nswe",
+                        "children": [
+                            (
+                                "Notebook.padding",
+                                {
+                                    "side": "top",
+                                    "sticky": "nswe",
+                                    "children": [("Notebook.label", {"sticky": ""})],
+                                },
+                            )
+                        ],
+                    },
+                )
+            ],
+        )
+        self.notebook = ttk.Notebook(card, style="GPI.TNotebook")
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        tab_deed = tk.Frame(self.notebook, bg=PANEL_DARK)
+        self._build_deed_tab(tab_deed)
+        self.notebook.add(tab_deed, text="From Deed PDF")
+        tab_excel = tk.Frame(self.notebook, bg=PANEL_DARK)
+        self._build_excel_tab(tab_excel)
+        self.notebook.add(tab_excel, text="Excel → XML")
         console_frame = tk.Frame(card, bg=PANEL_DARK); console_frame.pack(fill="both", expand=True, padx=16, pady=(0,10))
         tk.Label(console_frame, text="Messages", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w")
         self.console = tk.Text(console_frame, height=10, bg=CONSOLE_BG, fg=CONSOLE_FG, relief="flat", font=("Consolas",10),
