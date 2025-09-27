@@ -774,6 +774,44 @@ class SettingsDialog(tk.Toplevel):
                       self.bearing_var.get(), self.tesseract_var.get())
         self.destroy()
 
+UNCERTAIN_WRAP_LEFT = "⟪"
+UNCERTAIN_WRAP_RIGHT = "⟫"
+REVIEW_COLUMNS = {"Bearing", "Distance (ft)", "Radius (ft)", "Arc Length (ft)", "Chord Length (ft)", "Chord Bearing"}
+NUMERIC_REVIEW_COLUMNS = {"Distance (ft)", "Radius (ft)", "Arc Length (ft)", "Chord Length (ft)"}
+
+
+def _wrap_uncertain_display(val: str) -> str:
+    if val is None:
+        return ""
+    s = str(val)
+    if not s:
+        return s
+    if s.startswith(UNCERTAIN_WRAP_LEFT) and s.endswith(UNCERTAIN_WRAP_RIGHT):
+        return s
+    return f"{UNCERTAIN_WRAP_LEFT}{s}{UNCERTAIN_WRAP_RIGHT}"
+
+
+def _strip_uncertainty_markup(val: str) -> str:
+    if val is None:
+        return ""
+    s = str(val)
+    if s.startswith(UNCERTAIN_WRAP_LEFT) and s.endswith(UNCERTAIN_WRAP_RIGHT):
+        return s[len(UNCERTAIN_WRAP_LEFT):-len(UNCERTAIN_WRAP_RIGHT)]
+    return s
+
+
+def _coerce_value_for_column(col_name: str, val: str):
+    if val in (None, ""):
+        return ""
+    if col_name in NUMERIC_REVIEW_COLUMNS:
+        cleaned = str(val).replace(",", "").strip()
+        try:
+            return float(cleaned)
+        except ValueError:
+            return cleaned
+    return val
+
+
 class EditableGrid(ttk.Treeview):
     def __init__(self, parent, columns, on_edit_commit, **kwargs):
         super().__init__(parent, columns=columns, show="headings", **kwargs)
@@ -782,7 +820,7 @@ class EditableGrid(ttk.Treeview):
             self.heading(c, text=c); self.column(c, width=150, stretch=True, anchor="w")
         self._editor = None; self.bind("<Double-1>", self._begin_edit)
         # Row highlighting tags for extraction confidence/edits.
-        self.tag_configure("uncertain", background="#FFF4B0", foreground="#1E1E1E")
+        self.tag_configure("uncertain", background="", foreground=TEXT_SOFT)
         self.tag_configure("edited", background="#C7F9CC", foreground="#123822")
     def _begin_edit(self, event):
         if self.identify("region", event.x, event.y) != "cell": return
@@ -1041,10 +1079,17 @@ class App(BaseTk):
         for idx, r in self.deed_df.iterrows():
             vals = [r.get(c,"") for c in self.grid["columns"]]
             if pandas is not None: vals = [("" if (isinstance(v,float) and pandas.isna(v)) else v) for v in vals]
-            row_id = self.grid.insert("", "end", values=vals)
-            populated_cols = {col for col, val in zip(self.grid["columns"], vals) if str(val).strip() != ""}
+            display_vals = []
+            populated_cols = set()
+            for col_name, val in zip(self.grid["columns"], vals):
+                text_val = "" if val in (None, "") else val
+                if str(text_val).strip() != "":
+                    populated_cols.add(col_name)
+                display_vals.append(text_val)
+            row_id = self.grid.insert("", "end", values=display_vals)
             edited = idx in self._edited_rows
-            state_auto = set() if edited else populated_cols
+            review_cols = {c for c in populated_cols if c in REVIEW_COLUMNS}
+            state_auto = set() if edited else review_cols
             self.grid_row_states[row_id] = {"edited": edited, "auto": state_auto}
             self._apply_row_style(row_id)
         self._configure_grid_tags()
@@ -1053,7 +1098,10 @@ class App(BaseTk):
         try: idx = list(self.grid.get_children()).index(row_id)
         except Exception: return
         if col_name in self.deed_df.columns and 0 <= idx < len(self.deed_df):
-            self.deed_df.iat[idx, self.deed_df.columns.get_loc(col_name)] = new_val
+            cleaned_val = _strip_uncertainty_markup(new_val)
+            coerced_val = _coerce_value_for_column(col_name, cleaned_val)
+            self.deed_df.iat[idx, self.deed_df.columns.get_loc(col_name)] = coerced_val
+            self.grid.set(row_id, col_name, cleaned_val)
             self._edited_rows.add(idx)
         state = self.grid_row_states.get(row_id)
         if state is not None:
@@ -1127,10 +1175,10 @@ class App(BaseTk):
             return
         try:
             if THEME_MODE == "dark":
-                self.grid.tag_configure("uncertain", background="#7B6F00", foreground="#FFF7C2")
+                self.grid.tag_configure("uncertain", background="", foreground=TEXT_SOFT)
                 self.grid.tag_configure("edited", background="#1F4D32", foreground="#DFF7E7")
             else:
-                self.grid.tag_configure("uncertain", background="#FFF4B0", foreground="#1E1E1E")
+                self.grid.tag_configure("uncertain", background="", foreground=TEXT_SOFT)
                 self.grid.tag_configure("edited", background="#C7F9CC", foreground="#123822")
         except Exception:
             pass
@@ -1140,12 +1188,18 @@ class App(BaseTk):
         state = self.grid_row_states.get(row_id)
         if state is None or not getattr(self, "grid", None):
             return
+        edited = bool(state.get("edited"))
+        review_cols = set() if edited else set(state.get("auto") or set())
         tags = []
-        if state.get("edited"):
+        if edited:
             tags.append("edited")
-        elif state.get("auto"):
-            tags.append("uncertain")
         self.grid.item(row_id, tags=tags)
+        for col_name in self.grid["columns"]:
+            current_val = self.grid.set(row_id, col_name)
+            base_val = _strip_uncertainty_markup(current_val)
+            display_val = _wrap_uncertain_display(base_val) if col_name in review_cols else base_val
+            if display_val != current_val:
+                self.grid.set(row_id, col_name, display_val)
     def save_deed_excel(self):
         if self.deed_df is None or self.deed_df.empty:
             messagebox.showerror("Nothing to save","No parsed courses to save. Extract first."); return
