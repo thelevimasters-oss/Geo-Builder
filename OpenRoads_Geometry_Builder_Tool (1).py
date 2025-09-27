@@ -750,7 +750,9 @@ class EditableGrid(ttk.Treeview):
         row_id = self.identify_row(event.y); col_id = self.identify_column(event.x)
         if not row_id or not col_id: return
         col_index = int(col_id.replace("#",""))-1
-        bbox = self.bbox(row_id, col_id); if not bbox: return
+        bbox = self.bbox(row_id, col_id)
+        if not bbox:
+            return
         x,y,w,h = bbox; value = self.set(row_id, self["columns"][col_index])
         self._editor = tk.Entry(self, relief="flat"); self._editor.insert(0, value)
         self._editor.select_range(0,"end"); self._editor.focus_set()
@@ -770,7 +772,19 @@ BaseTk = TkinterDnD.Tk if DND_AVAILABLE else tk.Tk
 
 class App(BaseTk):
     def __init__(self):
-        super().__init__()
+        global DND_AVAILABLE
+        self._dnd_error = None
+        self.dnd_enabled = DND_AVAILABLE
+        try:
+            super().__init__()
+        except tk.TclError as exc:
+            if DND_AVAILABLE:
+                DND_AVAILABLE = False
+                self.dnd_enabled = False
+                self._dnd_error = str(exc)
+                tk.Tk.__init__(self)
+            else:
+                raise
         self.title("OpenRoads Designer Geometry Builder XML Generator — GPI")
         self.geometry("1260x820"); self.minsize(1140,760); self.configure(bg=BG_DARK)
         try:
@@ -820,6 +834,12 @@ class App(BaseTk):
                                    bg=STATUS_BG, fg=STATUS_FG, anchor="w", padx=10, font=("Segoe UI",9))
         self.status_lbl.pack(side="left", fill="x")
         self._bind_hint(self._settings_btn, "Open Settings (theme, units, bearing format, OCR path)")
+        if self._dnd_error:
+            msg = ("Drag & drop support could not be enabled because the tkdnd library is missing. "
+                   "The app will continue without drag & drop.\n\nDetails: " + self._dnd_error)
+            self.after(200, lambda: messagebox.showwarning("Drag & Drop Unavailable", msg, parent=self))
+            self._log("Drag & Drop disabled — tkdnd library not found. Continuing without drag & drop support.")
+            self._dnd_error = None
     def _build_excel_tab(self, parent):
         tk.Label(parent, text="Excel workbook (.xlsx)", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(16,6))
         in_row = tk.Frame(parent, bg=PANEL_DARK); in_row.pack(fill="x", padx=16, pady=4)
@@ -830,7 +850,7 @@ class App(BaseTk):
         self.in_entry.pack(side="left", fill="x", expand=True)
         btn_in = self._secondary_button(in_row, "Browse…", self.browse_in); btn_in.pack(side="left", padx=(8,0))
         self._bind_hint(self.in_entry, "Drop an .xlsx here or click Browse…"); self._bind_hint(btn_in, "Pick an Excel workbook")
-        if DND_AVAILABLE:
+        if self.dnd_enabled:
             try:
                 self.in_entry.drop_target_register(DND_FILES); self.in_entry.dnd_bind("<<Drop>>", self._on_drop_excel)
             except Exception: pass
@@ -869,7 +889,7 @@ class App(BaseTk):
         self.pdf_entry.pack(side="left", fill="x", expand=True)
         btn_browse_pdf = self._secondary_button(pdf_row, "Browse…", self.browse_pdf); btn_browse_pdf.pack(side="left", padx=(8,0))
         self._bind_hint(self.pdf_entry, "Drop a deed PDF here or click Browse…"); self._bind_hint(btn_browse_pdf, "Pick a deed PDF")
-        if DND_AVAILABLE:
+        if self.dnd_enabled:
             try:
                 self.pdf_entry.drop_target_register(DND_FILES); self.pdf_entry.dnd_bind("<<Drop>>", self._on_drop_pdf)
             except Exception: pass
@@ -984,12 +1004,16 @@ class App(BaseTk):
         if not p: return
         self.pdf_var.set(p); self.deed_pdf_path = Path(p); self._log(f"Selected deed PDF: {p}")
     def _on_drop_excel(self, event):
-        p = self._extract_path_from_dnd(event.data); if not p: return
+        p = self._extract_path_from_dnd(event.data)
+        if not p:
+            return
         if Path(p).suffix.lower() != ".xlsx":
             messagebox.showerror("Unsupported file","Please drop an .xlsx workbook."); return
         self.in_var.set(p); self.out_var.set(str(Path(p).with_suffix(".xml"))); self._log(f"Dropped workbook: {p}")
     def _on_drop_pdf(self, event):
-        p = self._extract_path_from_dnd(event.data); if not p: return
+        p = self._extract_path_from_dnd(event.data)
+        if not p:
+            return
         if Path(p).suffix.lower() != ".pdf":
             messagebox.showerror("Unsupported file","Please drop a .pdf deed file."); return
         self.pdf_var.set(p); self.deed_pdf_path = Path(p); self._log(f"Dropped deed PDF: {p}")
