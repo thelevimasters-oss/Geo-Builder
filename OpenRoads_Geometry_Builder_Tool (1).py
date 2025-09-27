@@ -469,6 +469,18 @@ def clean_text_for_parsing(t: str) -> str:
     s = t.replace("′","'").replace("’","'").replace("`","'")
     s = s.replace("″",'"').replace("“",'"').replace("”",'"')
     s = s.replace("º","°").replace("‐","-").replace("–","-").replace("—","-")
+    # Normalize common prose variants so the parsing regexes are less brittle.
+    s = re.sub(r"(?i)\bDEG(?:REE|REES)?\b", "°", s)
+    s = re.sub(r"(?i)\bMIN(?:UTE|UTES)?\b", "'", s)
+    s = re.sub(r"(?i)\bSEC(?:OND|ONDS)?\b", '"', s)
+    s = re.sub(r"(?i)\bNORTH(?:ERLY)?\b", "N", s)
+    s = re.sub(r"(?i)\bSOUTH(?:ERLY)?\b", "S", s)
+    s = re.sub(r"(?i)\bEAST(?:ERLY)?\b", "E", s)
+    s = re.sub(r"(?i)\bWEST(?:ERLY)?\b", "W", s)
+    s = re.sub(r"(?i)\bTHEN\b", "THENCE", s)
+    # Remove stray punctuation trailing units or numbers that commonly appears after OCR.
+    s = re.sub(r"(?i)(FEET|FT|M|METERS|CHAIN|CHAINS|CHS|ROD|RODS|RDS)[\.,](?=\s)", r"\1", s)
+    s = re.sub(r"(?<=\d)[\.,](?=\s)", "", s)
     s = re.sub(r"[ \t]+"," ", s)
     return s
 
@@ -480,38 +492,39 @@ def _to_float(s: str):
 # ---------- FIXED, SAFE, VERBOSE REGEXES ----------
 _LINE_QD_PATTERN = re.compile(r"""
     \b
-    (?:THENCE\s+)?                 # optional THENCE
-    ([NS])\s*                      # N or S
-    (                              
-        [0-9]{1,3}                  # degrees
+    (?:THENCE\s+)?(?:ALONG\s+)?(?:THE\s+)?        # optional prose
+    ([NS])\s*                                      # N or S
+    (
+        [0-9]{1,3}
         (?:
-            [°º]\s*\d{1,2}          # minutes part begins
-            (?:['’]\s*\d{1,2}(?:"|”)? )?   # optional seconds (\" or ”)
+            [°º]\s*\d{1,2}(?:['’]\s*\d{1,2}(?:"|”)? )?   # DMS
             |
-            \d+(?:\.\d+)?           # or decimal degrees within quadrant
+            \d+(?:\.\d+)?                                 # or decimal
         )
     )
-    \s*([EW])                      # E or W
-    .*?                            # up to distance
-    \b(?:DIST(?:ANCE)?\s+OF\s+)?   # optional 'distance of'
-    ([0-9,]+(?:\.\d+)?)            # distance number
-    \s*(FEET|FT|METERS?|M|CHAINS?|CHS?|RODS?)\b   # units
+    \s*([EW])                                      # E or W
+    (?:[^0-9]{0,80})?                               # brief prose before distance
+    (?:\b(?:FOR\s+)?(?:A\s+)?(?:DIST(?:ANCE)?|LENGTH)\s+(?:OF\s+)?)?  # optional distance prose
+    ([0-9,]+(?:\.\d+)?)                             # distance number
+    \s*(FEET|FT|METERS?|M|CHAINS?|CHS?|RODS?|RDS?)  # units
+    (?=[\s,\.])
     """, re.IGNORECASE | re.DOTALL | re.VERBOSE)
 
 _LINE_AZ_PATTERN = re.compile(r"""
     \b
     (?:THENCE\s+)?(?:ALONG\s+)?(?:A\s+BEARING\s+OF\s+)?  # optional prose
-    ([0-9]{1,3}(?:\.\d+)?)\s*DEG(?:REES?)?               # azimuth degrees
+    ([0-9]{1,3}(?:\.\d+)?)\s*(?:°|DEG(?:REES?)?)          # azimuth degrees
     .*?
-    \b([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?)\b  # distance + units
+    \b([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?|RDS?)  # distance + units
+    (?=[\s,\.])
     """, re.IGNORECASE | re.DOTALL | re.VERBOSE)
 
 _CURVE_PATTERN = re.compile(r"""
     \bCURVE\s+TO\s+THE\s+(RIGHT|LEFT)\b
     .*?
-    \bRADIUS\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?)\b
-    (?: .*? \bARC\s+LENGTH\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?)\b )?
-    (?: .*? \bCHORD\s+(?:DIST(?:ANCE)?|LENGTH)\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?)\b )?
+    \bRADIUS\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?|RDS?)\b
+    (?: .*? \bARC\s+LENGTH\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?|RDS?)\b )?
+    (?: .*? \bCHORD\s+(?:DIST(?:ANCE)?|LENGTH)\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?|RDS?)\b )?
     (?: .*? \bCHORD\s+BEARS?\s+(N|S)\s*([0-9]{1,3}(?:[°º]\s*\d{1,2}(?:['’]\s*\d{1,2}(?:"|”)? )?|\d+(?:\.\d+)?))\s*(E|W) )?
     """, re.IGNORECASE | re.DOTALL | re.VERBOSE)
 
@@ -519,31 +532,10 @@ def parse_deed_text_to_dataframe(text: str, assumed_unit: str = "feet"):
     if pandas is None:
         raise RuntimeError("pandas is required to build the parsed table. Please install:\n  pip install pandas")
     s = clean_text_for_parsing(text)
-    rows = []
+    entries = []
+    taken_spans = []
 
-    # Lines (quadrant)
-    for m in _LINE_QD_PATTERN.finditer(s):
-        ns, body, ew, dist, unit = m.groups()
-        bearing = f"{ns} {body} {ew}".upper().replace("  "," ")
-        unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
-        rows.append({
-            "Type":"Line","Bearing":bearing,"Distance":_to_float(dist),"DistanceUnit":unit_norm,
-            "Radius":None,"RadiusUnit":None,"Arc Length":None,"ArcUnit":None,
-            "Chord Length":None,"ChordUnit":None,"Chord Bearing":None
-        })
-
-    # Lines (azimuth)
-    for m in _LINE_AZ_PATTERN.finditer(s):
-        az_deg, dist, unit = m.groups()
-        bearing = str(az_deg).strip()
-        unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
-        rows.append({
-            "Type":"Line","Bearing":bearing,"Distance":_to_float(dist),"DistanceUnit":unit_norm,
-            "Radius":None,"RadiusUnit":None,"Arc Length":None,"ArcUnit":None,
-            "Chord Length":None,"ChordUnit":None,"Chord Bearing":None
-        })
-
-    # Curves
+    # Curves first so we can avoid mis-classifying their descriptive prose as line calls.
     for m in _CURVE_PATTERN.finditer(s):
         rl, rad, rad_unit, arc_len, arc_unit, chord_len, chord_unit, cns, cbody, cew = m.groups()
         radius = _to_float(rad)
@@ -553,13 +545,57 @@ def parse_deed_text_to_dataframe(text: str, assumed_unit: str = "feet"):
         chord = _to_float(chord_len) if chord_len else None
         chord_u = normalize_unit_token(chord_unit, default_unit=assumed_unit) if chord_unit else None
         chord_bearing = f"{cns} {cbody} {cew}".upper().replace("  "," ") if (cns and cbody and cew) else None
-        rows.append({
+        start, end = m.span()
+        entries.append((start, {
             "Type":"Curve","Bearing":None,"Distance":None,"DistanceUnit":None,
             "Radius":radius,"RadiusUnit":r_unit,"Arc Length":arc,"ArcUnit":arc_u,
             "Chord Length":chord,"ChordUnit":chord_u,"Chord Bearing":chord_bearing
-        })
+        }))
+        taken_spans.append((start, end))
 
-    df = pandas.DataFrame(rows, columns=[
+    def _is_within_taken(pos: int) -> bool:
+        for s0, e0 in taken_spans:
+            if s0 <= pos < e0:
+                return True
+        return False
+
+    # Lines (quadrant)
+    for m in _LINE_QD_PATTERN.finditer(s):
+        if _is_within_taken(m.start()):
+            continue
+        ns, body, ew, dist, unit = m.groups()
+        bearing = f"{ns} {body} {ew}".upper().replace("  "," ")
+        unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
+        entries.append((m.start(), {
+            "Type":"Line","Bearing":bearing,"Distance":_to_float(dist),"DistanceUnit":unit_norm,
+            "Radius":None,"RadiusUnit":None,"Arc Length":None,"ArcUnit":None,
+            "Chord Length":None,"ChordUnit":None,"Chord Bearing":None
+        }))
+
+    # Lines (azimuth)
+    for m in _LINE_AZ_PATTERN.finditer(s):
+        if _is_within_taken(m.start()):
+            continue
+        az_deg, dist, unit = m.groups()
+        bearing = str(az_deg).strip()
+        unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
+        entries.append((m.start(), {
+            "Type":"Line","Bearing":bearing,"Distance":_to_float(dist),"DistanceUnit":unit_norm,
+            "Radius":None,"RadiusUnit":None,"Arc Length":None,"ArcUnit":None,
+            "Chord Length":None,"ChordUnit":None,"Chord Bearing":None
+        }))
+
+    # Sort by textual order and drop duplicate spans.
+    entries.sort(key=lambda tup: tup[0])
+    ordered_rows = []
+    seen_positions = set()
+    for pos, data in entries:
+        if pos in seen_positions:
+            continue
+        seen_positions.add(pos)
+        ordered_rows.append(data)
+
+    df = pandas.DataFrame(ordered_rows, columns=[
         "Type","Bearing","Distance","DistanceUnit","Radius","RadiusUnit",
         "Arc Length","ArcUnit","Chord Length","ChordUnit","Chord Bearing"
     ])
