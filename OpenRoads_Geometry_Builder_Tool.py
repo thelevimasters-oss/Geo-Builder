@@ -951,6 +951,14 @@ class App(BaseTk):
                                        font=("Segoe UI Symbol",16), padx=10, pady=2, cursor="hand2",
                                        activebackground=BG_DARK, activeforeground=GPI_HL, bd=0)
         self._settings_btn.pack(side="right", padx=16)
+        self._meta_label = tk.Label(
+            header,
+            text="Levi Masters  •  v 1.00",
+            bg=BG_DARK,
+            fg=TEXT_SOFT,
+            font=("Segoe UI", 10),
+        )
+        self._meta_label.pack(side="right", padx=(0, 6))
         card = tk.Frame(self, bg=PANEL_DARK, highlightthickness=1, highlightbackground=PANEL_BORDER, bd=0)
         card.pack(padx=22, pady=(16,0), fill="both", expand=True)
         notebook_style = ttk.Style(self)
@@ -1057,8 +1065,7 @@ class App(BaseTk):
                 "  • Input Units setting controls how distances in Excel are interpreted\n"
                 "  • Output Units setting controls the distances written into the XML\n"
                 "  • Output is pretty-printed UTF-16 XML ready for OpenRoads Geometry Builder\n"
-                "\n"
-                "Creator: Levi Masters  •  Theme: GPI  •  Tool: OpenRoads Designer Geometry Builder XML Generator\n")
+                )
         tk.Label(parent, text=info, justify="left", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(fill="x", padx=16, pady=(8,4))
         actions = tk.Frame(parent, bg=PANEL_DARK); actions.pack(fill="x", padx=16, pady=(6,12))
         btn_convert = self._cta_button(actions, "Convert"); btn_convert.pack(side="left"); btn_convert.configure(command=self.convert)
