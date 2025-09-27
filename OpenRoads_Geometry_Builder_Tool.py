@@ -22,8 +22,48 @@ This script is built to degrade gracefully if optional packages are missing:
 - Drag & drop: tkinterdnd2
 """
 
-import sys, math, re, datetime, shlex, io, traceback, tempfile
+import sys, math, re, datetime, shlex, io, traceback, tempfile, subprocess
 from pathlib import Path
+import importlib.util
+from typing import List, Tuple
+
+# ---------------------- DEPENDENCY BOOTSTRAP ----------------------
+
+def ensure_python_packages(packages: List[Tuple[str, str]]):
+    """Install required Python packages if they are missing.
+
+    Parameters
+    ----------
+    packages : list of tuples
+        Each tuple is (module_name, pip_package_name). They may differ when the
+        import name is not the same as the pip distribution.
+    """
+
+    for module_name, pip_name in packages:
+        try:
+            if importlib.util.find_spec(module_name):
+                continue
+        except Exception:
+            # If find_spec fails for any reason, fall back to attempting the install.
+            pass
+
+        package_label = pip_name or module_name
+        print(f"[setup] Installing missing dependency '{package_label}'...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", package_label])
+        except Exception as exc:
+            print(f"[setup] Failed to install '{package_label}': {exc}")
+
+
+ensure_python_packages([
+    ("pandas", "pandas"),
+    ("openpyxl", "openpyxl"),
+    ("pdfplumber", "pdfplumber"),
+    ("fitz", "PyMuPDF"),
+    ("pytesseract", "pytesseract"),
+    ("PIL", "Pillow"),
+    ("tkinterdnd2", "tkinterdnd2"),
+])
 
 # ---------------------- THEME / BRAND ----------------------
 GPI_GREEN  = "#0F3320"
