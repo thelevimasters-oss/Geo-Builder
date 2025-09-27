@@ -1017,9 +1017,9 @@ class App(BaseTk):
 
         self.notebook = ttk.Notebook(card, style="ModernNotebook.TNotebook")
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
-        tab_qc    = tk.Frame(self.notebook, bg=PANEL_DARK);   self._build_deed_qc_tab(tab_qc);   self.notebook.add(tab_qc, text="Deed QC")
-        tab_call  = tk.Frame(self.notebook, bg=PANEL_DARK);   self._build_call_tab(tab_call);    self.notebook.add(tab_call, text="Call Extraction")
-        tab_excel = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_excel_tab(tab_excel); self.notebook.add(tab_excel, text="Excel → XML")
+        tab_qc    = tk.Frame(self.notebook, bg=PANEL_DARK);   self._build_deed_qc_tab(tab_qc);   self.notebook.add(tab_qc, text="Review")
+        tab_call  = tk.Frame(self.notebook, bg=PANEL_DARK);   self._build_call_tab(tab_call);    self.notebook.add(tab_call, text="Extract")
+        tab_excel = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_excel_tab(tab_excel); self.notebook.add(tab_excel, text="Export")
         console_frame = tk.Frame(card, bg=PANEL_DARK); console_frame.pack(fill="both", expand=True, padx=16, pady=(0,10))
         tk.Label(console_frame, text="Messages", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w")
         self.console = tk.Text(console_frame, height=10, bg=CONSOLE_BG, fg=CONSOLE_FG, relief="flat", font=("Consolas",10),
