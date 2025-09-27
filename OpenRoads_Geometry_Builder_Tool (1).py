@@ -857,11 +857,35 @@ class App(BaseTk):
         self._settings_btn.pack(side="right", padx=16)
         card = tk.Frame(self, bg=PANEL_DARK, highlightthickness=1, highlightbackground=PANEL_BORDER, bd=0)
         card.pack(padx=22, pady=(16,0), fill="both", expand=True)
-        self.notebook = ttk.Notebook(card); self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
-        try: ttk.Style(self).theme_use("clam")
-        except: pass
+        style = ttk.Style(self)
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        style.configure("ModernNotebook.TNotebook",
+                        background=PANEL_DARK,
+                        borderwidth=0,
+                        tabmargins=(14, 10, 14, 0))
+        style.configure("ModernNotebook.Tab",
+                        background=PANEL_DARK,
+                        foreground=TEXT_SOFT,
+                        font=("Segoe UI", 11, "bold"),
+                        padding=(24, 12))
+        style.map("ModernNotebook.Tab",
+                   background=[("selected", BG_DARK), ("active", PANEL_BORDER)],
+                   foreground=[("selected", TEXT_LIGHT), ("active", TEXT_LIGHT)])
+        style.layout("ModernNotebook.Tab", [
+            ("Notebook.tab", {"sticky": "nswe", "children": [
+                ("Notebook.padding", {"side": "top", "sticky": "nswe", "children": [
+                    ("Notebook.label", {"sticky": "nswe"})
+                ]})
+            ]})
+        ])
+
+        self.notebook = ttk.Notebook(card, style="ModernNotebook.TNotebook")
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+        tab_deed  = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_deed_tab(tab_deed);  self.notebook.add(tab_deed, text="Deed PDF")
         tab_excel = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_excel_tab(tab_excel); self.notebook.add(tab_excel, text="Excel → XML")
-        tab_deed  = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_deed_tab(tab_deed);  self.notebook.add(tab_deed, text="From Deed PDF")
         console_frame = tk.Frame(card, bg=PANEL_DARK); console_frame.pack(fill="both", expand=True, padx=16, pady=(0,10))
         tk.Label(console_frame, text="Messages", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w")
         self.console = tk.Text(console_frame, height=10, bg=CONSOLE_BG, fg=CONSOLE_FG, relief="flat", font=("Consolas",10),
