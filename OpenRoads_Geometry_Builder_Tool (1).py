@@ -879,6 +879,28 @@ class App(BaseTk):
         self._edited_rows = set()
         self.withdraw(); self.after(10, lambda: Splash(self, duration_ms=1100, on_done=self._after_splash))
     def _after_splash(self): self.deiconify(); self._build_ui()
+    def _add_notebook_tab(self, title: str, builder):
+        frame = tk.Frame(self.notebook, bg=PANEL_DARK)
+        self.notebook.add(frame, text=title)
+        try:
+            builder(frame)
+        except Exception as exc:
+            err = f"{title} tab failed to load: {exc}"
+            tb = traceback.format_exc()
+            self._log(err)
+            for line in tb.strip().splitlines():
+                if line and line != err:
+                    self._log(line)
+            traceback.print_exc()
+            tk.Label(
+                frame,
+                text="An error occurred while building this tab. Check the log for details.",
+                bg=PANEL_DARK,
+                fg=TEXT_LIGHT,
+                wraplength=520,
+                justify="left",
+            ).pack(padx=16, pady=16, anchor="w")
+        return frame
     def _build_ui(self):
         for w in list(self.winfo_children()):
             if isinstance(w, tk.Toplevel): continue
@@ -927,9 +949,9 @@ class App(BaseTk):
 
         self.notebook = ttk.Notebook(card, style="ModernNotebook.TNotebook")
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
-        tab_qc    = tk.Frame(self.notebook, bg=PANEL_DARK);   self._build_deed_qc_tab(tab_qc);   self.notebook.add(tab_qc, text="Deed QC")
-        tab_call  = tk.Frame(self.notebook, bg=PANEL_DARK);   self._build_call_tab(tab_call);    self.notebook.add(tab_call, text="Call Extraction")
-        tab_excel = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_excel_tab(tab_excel); self.notebook.add(tab_excel, text="Excel → XML")
+        self._add_notebook_tab("Deed QC", self._build_deed_qc_tab)
+        self._add_notebook_tab("Call Extraction", self._build_call_tab)
+        self._add_notebook_tab("Excel → XML", self._build_excel_tab)
         console_frame = tk.Frame(card, bg=PANEL_DARK); console_frame.pack(fill="both", expand=True, padx=16, pady=(0,10))
         tk.Label(console_frame, text="Messages", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w")
         self.console = tk.Text(console_frame, height=10, bg=CONSOLE_BG, fg=CONSOLE_FG, relief="flat", font=("Consolas",10),
