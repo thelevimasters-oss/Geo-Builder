@@ -1551,11 +1551,25 @@ class App(BaseTk):
 
     def _log(self, msg):
         self._log_history.append(msg)
-        if getattr(self, "console", None):
-            self.console.configure(state="normal")
-            self.console.insert("end", msg+"\n")
-            self.console.see("end")
-            self.console.configure(state="disabled")
+        console = getattr(self, "console", None)
+        if not console:
+            return
+        try:
+            # ``winfo_exists`` returns 1 while the underlying Tk widget is alive. During
+            # a theme rebuild the old Text widget is destroyed, and trying to interact
+            # with it raises a TclError which previously halted the UI rebuild and
+            # prevented the other tabs from being recreated.
+            if not int(console.winfo_exists()):
+                raise tk.TclError
+            console.configure(state="normal")
+            console.insert("end", msg+"\n")
+            console.see("end")
+            console.configure(state="disabled")
+        except tk.TclError:
+            # If the widget vanished (e.g. while rebuilding for a theme change),
+            # drop the stale reference; the next rebuild will create a fresh console
+            # and ``_render_log_history`` will repopulate it from ``_log_history``.
+            self.console = None
 
 def _run_cli(argv):
     parser = argparse.ArgumentParser(
