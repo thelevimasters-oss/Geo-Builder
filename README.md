@@ -7,7 +7,7 @@ Geo-Builder is a desktop companion for Bentley OpenRoads Designer users who need
 - **Excel → XML conversion** – Create a valid OpenRoads geometry XML file from one or more worksheets. Each sheet is treated as a separate geometry with the worksheet name used as the geometry name.
 - **Configurable settings** – Control input/output units (feet, meters, rods, chains) and choose between DMS and decimal bearing formats.
 - **Modern Tk interface** – Dark/light theming, drag-and-drop support (when `tkinterdnd2` is installed), live status hints, and an activity log console.
-- **Deed PDF helper** – Parse bearings, distances, and curve data from a deed PDF, preview the interpreted data, export it to Excel, and feed it back into the converter. Text extraction uses `pdfplumber`/`PyMuPDF` with an optional Tesseract OCR fallback.
+- **Deed PDF helper** – Parse bearings, distances, and curve data from a deed PDF, pre-analyze and highlight detected calls in the editable text, export the interpreted data to Excel, and feed it back into the converter. Text extraction uses `pdfplumber`/`PyMuPDF` with an optional Tesseract OCR fallback.
 - **Graceful degradation** – Optional capabilities (icons, drag-and-drop, PDF parsing, OCR) are skipped automatically if their dependencies are unavailable.
 
 ## Requirements
