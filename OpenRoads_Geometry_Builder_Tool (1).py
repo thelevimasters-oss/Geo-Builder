@@ -1253,13 +1253,14 @@ class App(BaseTk):
         tags = []
         if edited:
             tags.append("edited")
+        elif review_cols:
+            tags.append("uncertain")
         self.grid.item(row_id, tags=tags)
         for col_name in self.grid["columns"]:
             current_val = self.grid.set(row_id, col_name)
             base_val = _strip_uncertainty_markup(current_val)
-            display_val = _wrap_uncertain_display(base_val) if col_name in review_cols else base_val
-            if display_val != current_val:
-                self.grid.set(row_id, col_name, display_val)
+            if base_val != current_val:
+                self.grid.set(row_id, col_name, base_val)
     def save_deed_excel(self):
         if self.deed_df is None or self.deed_df.empty:
             messagebox.showerror("Nothing to save","No parsed courses to save. Extract first."); return
