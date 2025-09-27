@@ -1033,14 +1033,27 @@ class App(BaseTk):
                        current_units_out=self.settings["units_out"], current_bearing_fmt=self.settings["bearing_fmt"],
                        current_tesseract_path=self.settings["tesseract_path"], on_apply=self.apply_settings)
     def apply_settings(self, mode, units_in, units_out, bearing_fmt, tess_path):
+        previous = dict(self.settings)
         self.settings.update({"theme":mode,"units_in":units_in,"units_out":units_out,"bearing_fmt":bearing_fmt,"tesseract_path":tess_path or ""})
         if tess_path:
-            ok = try_set_tesseract_cmd(tess_path); self._log("Tesseract path set." if ok else "Tesseract path invalid or not found.")
-        in_path = self.in_var.get() if hasattr(self,"in_var") else ""
-        out_path = self.out_var.get() if hasattr(self,"out_var") else ""
-        pdf_path = self.pdf_var.get() if hasattr(self,"pdf_var") else ""
-        set_theme(mode); self.configure(bg=BG_DARK); self._build_ui()
-        self.in_var.set(in_path); self.out_var.set(out_path); self.pdf_var.set(pdf_path)
+            ok = try_set_tesseract_cmd(tess_path)
+            self._log("Tesseract path set." if ok else "Tesseract path invalid or not found.")
+        elif previous.get("tesseract_path"):
+            # Path cleared
+            self._log("Tesseract path cleared; OCR will rely on auto-detect.")
+        if previous.get("theme") != mode:
+            in_path = self.in_var.get() if hasattr(self,"in_var") else ""
+            out_path = self.out_var.get() if hasattr(self,"out_var") else ""
+            pdf_path = self.pdf_var.get() if hasattr(self,"pdf_var") else ""
+            selected_tab = None
+            if hasattr(self, "notebook"):
+                try: selected_tab = self.notebook.index("current")
+                except Exception: selected_tab = None
+            set_theme(mode); self.configure(bg=BG_DARK); self._build_ui()
+            self.in_var.set(in_path); self.out_var.set(out_path); self.pdf_var.set(pdf_path)
+            if selected_tab is not None:
+                try: self.notebook.select(selected_tab)
+                except Exception: pass
         self._log(f"Settings applied → Theme={mode}, Input Units={units_in}, Output Units={units_out}, Bearing Format={bearing_fmt}")
     def convert(self):
         try:
