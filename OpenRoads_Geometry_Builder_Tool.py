@@ -22,7 +22,7 @@ This script is built to degrade gracefully if optional packages are missing:
 - Drag & drop: tkinterdnd2
 """
 
-import sys, math, re, datetime, shlex, io, traceback
+import sys, math, re, datetime, shlex, io, traceback, tempfile
 from pathlib import Path
 
 # ---------------------- THEME / BRAND ----------------------
@@ -59,10 +59,16 @@ def set_theme(mode: str):
 set_theme(THEME_MODE)
 
 # ---------------------- UNITS ----------------------
+DEFAULT_LINEAR_UNIT = "feet"
+# Update these dictionaries if new unit conversions are required.
 UNIT_TO_FEET = {"feet":1.0,"meters":3.280839895013123,"rods":16.5,"chains":66.0}
 FEET_TO_UNIT = {"feet":1.0,"meters":0.3048}
 
-def normalize_unit_token(tok: str, default_unit="feet") -> str:
+def _unit_factor(mapping: dict, unit: str, default: str) -> float:
+    key = (unit or default).strip().lower()
+    return mapping.get(key, mapping[default])
+
+def normalize_unit_token(tok: str, default_unit=DEFAULT_LINEAR_UNIT) -> str:
     if not tok: return default_unit
     t = tok.strip().lower().rstrip(".")
     if t in ("ft","foot","feet","'", "ft.","feet.","foot."): return "feet"
@@ -73,9 +79,11 @@ def normalize_unit_token(tok: str, default_unit="feet") -> str:
 
 def convert_value_units(val: float, from_unit: str, to_unit: str) -> float:
     if val is None: return None
-    if from_unit == to_unit: return float(val)
-    ft = float(val) * UNIT_TO_FEET[from_unit]
-    return ft * FEET_TO_UNIT[to_unit]
+    from_norm = normalize_unit_token(from_unit, DEFAULT_LINEAR_UNIT)
+    to_norm = normalize_unit_token(to_unit, DEFAULT_LINEAR_UNIT)
+    if from_norm == to_norm: return float(val)
+    ft = float(val) * _unit_factor(UNIT_TO_FEET, from_norm, DEFAULT_LINEAR_UNIT)
+    return ft * _unit_factor(FEET_TO_UNIT, to_norm, DEFAULT_LINEAR_UNIT)
 
 # ---------------------- SAFE IMPORTS ----------------------
 def _try_import(modname):
@@ -250,8 +258,10 @@ def append_geometry_definition(parent: Element,
     if courses_df is None or courses_df.empty or "Type" not in courses_df.columns:
         return
 
-    in_to_ft = UNIT_TO_FEET[in_units]
-    ft_to_out = FEET_TO_UNIT[out_units]
+    in_unit_norm = normalize_unit_token(in_units, DEFAULT_LINEAR_UNIT)
+    out_unit_norm = normalize_unit_token(out_units, DEFAULT_LINEAR_UNIT)
+    in_to_ft = _unit_factor(UNIT_TO_FEET, in_unit_norm, DEFAULT_LINEAR_UNIT)
+    ft_to_out = _unit_factor(FEET_TO_UNIT, out_unit_norm, DEFAULT_LINEAR_UNIT)
     prev_direction = None
 
     for _, row in courses_df.iterrows():
@@ -298,9 +308,10 @@ def append_geometry_definition(parent: Element,
             L_in = pick_numeric(row, "Arc Length","Arc Length ft","Arc Length (ft)","Arc Length (m)")
             C_in = pick_numeric(row, "Chord Length","Chord Length ft","Chord Length (ft)","Chord Length (m)")
 
-            R_ft = (R_in or 0.0) * UNIT_TO_FEET[in_units]
-            L_ft = (L_in if L_in is not None else 0.0) * UNIT_TO_FEET[in_units] if L_in is not None else None
-            C_ft = (C_in if C_in is not None else 0.0) * UNIT_TO_FEET[in_units] if C_in is not None else None
+            unit_factor = _unit_factor(UNIT_TO_FEET, in_unit_norm, DEFAULT_LINEAR_UNIT)
+            R_ft = (R_in or 0.0) * unit_factor
+            L_ft = (L_in if L_in is not None else 0.0) * unit_factor if L_in is not None else None
+            C_ft = (C_in if C_in is not None else 0.0) * unit_factor if C_in is not None else None
 
             has_arc = L_ft is not None and L_ft > 0
             has_chord = C_ft is not None and C_ft > 0
@@ -359,15 +370,21 @@ def append_geometry_definition(parent: Element,
                 "spiEndIsInfinite": "False",
                 "spiEndRadius": "∞",
             })
+            prev_direction = direction_for_xml
         else:
             continue
 
 def convert_excel_to_xml_multi(input_xlsx: Path, output_xml: Path, logger=None,
-                               bearing_fmt: str = "dms", input_units: str = "feet", output_units: str = "feet"):
+                               bearing_fmt: str = "dms", input_units: str = DEFAULT_LINEAR_UNIT, output_units: str = DEFAULT_LINEAR_UNIT):
     sheets = load_all_sheet_names(input_xlsx)
+    in_units_norm = normalize_unit_token(input_units, DEFAULT_LINEAR_UNIT)
+    out_units_norm = normalize_unit_token(output_units, DEFAULT_LINEAR_UNIT)
+    bearing_fmt_norm = (bearing_fmt or "dms").strip().lower()
     if logger:
         logger(f"Workbook has {len(sheets)} sheet(s): {', '.join(sheets)}")
-        logger(f"Settings → Bearing Format: {bearing_fmt.upper()}, Input Units: {input_units.title()}, Output Units: {output_units.title()}")
+        logger(
+            f"Settings → Bearing Format: {bearing_fmt_norm.upper()}, Input Units: {in_units_norm.title()}, Output Units: {out_units_norm.title()}"
+        )
 
     root = Element("GeometryBuilderDefinitions")
     rows = lines = curves = 0
@@ -392,7 +409,7 @@ def convert_excel_to_xml_multi(input_xlsx: Path, output_xml: Path, logger=None,
             if logger: logger("  No 'Type' column or no usable rows; geometry will be empty.")
 
         append_geometry_definition(root, df, name=name,
-                                   bearing_fmt=bearing_fmt, in_units=input_units, out_units=output_units)
+                                   bearing_fmt=bearing_fmt_norm, in_units=in_units_norm, out_units=out_units_norm)
         if logger: logger(f"  Appended geometry: {name!r}")
 
     if logger: logger("Writing XML file…")
@@ -436,16 +453,16 @@ def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
         except Exception as e:
             if logger: logger(f"PyMuPDF text extraction failed: {e}")
     if fitz is not None and pytesseract is not None:
+        if not HAVE_PIL:
+            if logger: logger("OCR skipped: pillow not installed.")
+            return text
         try:
             doc = fitz.open(str(pdf_path))
             for p in doc:
                 pix = p.get_pixmap(dpi=300)
                 img_bytes = pix.tobytes("png")
-                if HAVE_PIL:
-                    image = Image.open(io.BytesIO(img_bytes))
-                    t = pytesseract.image_to_string(image)
-                else:
-                    t = pytesseract.image_to_string(Image.open(io.BytesIO(img_bytes)))
+                image = Image.open(io.BytesIO(img_bytes))
+                t = pytesseract.image_to_string(image)
                 if t.strip(): text += t + "\n"
             if text.strip():
                 if logger: logger("Text extracted via OCR (PyMuPDF + pytesseract)."); return text
@@ -471,6 +488,8 @@ def _to_float(s: str):
     except: return None
 
 # ---------- FIXED, SAFE, VERBOSE REGEXES ----------
+# If a deed uses unfamiliar phrasing, adjust the patterns below.
+# Each pattern is isolated and uses re.VERBOSE for easier maintenance.
 _LINE_QD_PATTERN = re.compile(r"""
     \b
     (?:THENCE\s+)?                 # optional THENCE
@@ -584,6 +603,99 @@ def dataframe_to_excel_schema(df, input_units_setting: str):
 
     out = out.dropna(how="all").fillna(value="")
     return out
+
+# ---------------------- LIGHTWEIGHT VALIDATION HELPERS ----------------------
+def _selftest_excel_conversion():
+    if pandas is None or openpyxl is None:
+        return "skipped", "Requires pandas and openpyxl"
+    headers = ["Type","Bearing","Distance (ft)","Radius (ft)","Arc Length (ft)","Chord Length (ft)","Chord Bearing"]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        tmpdir = Path(tmpdir)
+        xlsx_path = tmpdir / "sample.xlsx"
+        xml_path = tmpdir / "sample.xml"
+        wb = openpyxl.Workbook()
+        ws1 = wb.active
+        ws1.title = "Alignment A"
+        ws1.append(headers)
+        ws1.append(["Line", "N 34°12'10\" E", 120.5, None, None, None, None])
+        ws1.append(["Curve", None, None, 250.0, 150.0, None, "S 12°30'45\" E"])
+        ws2 = wb.create_sheet("Alignment B")
+        ws2.append(headers)
+        ws2.append(["Line", "123.45", 200.0, None, None, None, None])
+        ws2.append(["Curve", None, None, 400.0, None, 300.0, "N 45°00'00\" W"])
+        wb.save(xlsx_path)
+        stats = convert_excel_to_xml_multi(xlsx_path, xml_path, logger=None,
+                                           bearing_fmt="dms", input_units="feet", output_units="feet")
+        if stats.get("sheets") != 2:
+            return "fail", f"Expected 2 sheets, found {stats.get('sheets')}"
+        tree = ElementTree()
+        tree.parse(xml_path)
+        root = tree.getroot()
+        geoms = root.findall("GeometryBuilderDefinition")
+        if len(geoms) != 2:
+            return "fail", f"Expected 2 geometries, found {len(geoms)}"
+        names = [g.get("name") for g in geoms]
+        if names != ["Alignment A", "Alignment B"]:
+            return "fail", f"Unexpected geometry names: {names}"
+        arc_leg = None
+        for leg in geoms[0].findall("./GeometryBuilderInfo/GeometryBuilderLegs/GeometryBuilderLeg"):
+            if leg.get("legType") == "Arc":
+                arc_leg = leg
+                break
+        if arc_leg is None:
+            return "fail", "First geometry missing arc leg"
+        expected_dir = parse_bearing_to_east_ccw_radians("S 12°30'45\" E", "dms")
+        actual_dir = float(arc_leg.get("direction", "0"))
+        if abs(actual_dir - expected_dir) > 1e-9:
+            return "fail", "Arc direction did not use chord bearing"
+        if arc_leg.get("arcParam2") != "Length":
+            return "fail", "Arc Param2 should be Length when arc length is supplied"
+        if abs(float(arc_leg.get("distance", "0")) - float(arc_leg.get("arcLength", "0"))) > 1e-9:
+            return "fail", "Arc distance should equal arc length"
+        arc_leg2 = None
+        for leg in geoms[1].findall("./GeometryBuilderInfo/GeometryBuilderLegs/GeometryBuilderLeg"):
+            if leg.get("legType") == "Arc":
+                arc_leg2 = leg
+                break
+        if arc_leg2 is None:
+            return "fail", "Second geometry missing arc leg"
+        if arc_leg2.get("arcParam2") != "Chord":
+            return "fail", "Arc Param2 should be Chord when only chord length is supplied"
+        return "ok", "Workbook conversion created two geometries with proper arc handling"
+
+def _selftest_pdf_parser():
+    if pandas is None:
+        return "skipped", "Requires pandas"
+    sample = (
+        "Beginning at a point; THENCE N 23°15'00\" W a distance of 245.5 feet to a point; "
+        "THENCE along a bearing of 123.45 degrees a distance of 78 feet; "
+        "THENCE a curve to the left having a radius of 500 feet and chord distance of 120 feet "
+        "with a chord bears S 45°30'00\" E."
+    )
+    df = parse_deed_text_to_dataframe(sample, assumed_unit="feet")
+    if df.empty:
+        return "fail", "Parser returned no rows"
+    type_counts = df["Type"].value_counts().to_dict()
+    if type_counts.get("Line", 0) < 2:
+        return "fail", "Expected at least two line segments"
+    if type_counts.get("Curve", 0) < 1:
+        return "fail", "Expected at least one curve segment"
+    curve_rows = df[df["Type"] == "Curve"]
+    if curve_rows["Chord Bearing"].isnull().all():
+        return "fail", "Curve row missing chord bearing"
+    return "ok", f"Parsed deed text into {len(df)} rows (Lines={type_counts.get('Line',0)}, Curves={type_counts.get('Curve',0)})"
+
+def _run_self_tests():
+    tests = [
+        ("excel_multi_geometry", _selftest_excel_conversion),
+        ("pdf_parser", _selftest_pdf_parser),
+    ]
+    for name, func in tests:
+        try:
+            status, detail = func()
+        except Exception as exc:
+            status, detail = "error", str(exc)
+        print(f"{name}: {status} - {detail}")
 
 # ---------------------- UI, GRID, SETTINGS, etc. (unchanged from previous message) ----------------------
 class Splash(tk.Toplevel):
@@ -743,7 +855,9 @@ class EditableGrid(ttk.Treeview):
         row_id = self.identify_row(event.y); col_id = self.identify_column(event.x)
         if not row_id or not col_id: return
         col_index = int(col_id.replace("#",""))-1
-        bbox = self.bbox(row_id, col_id); if not bbox: return
+        bbox = self.bbox(row_id, col_id)
+        if not bbox:
+            return
         x,y,w,h = bbox; value = self.set(row_id, self["columns"][col_index])
         self._editor = tk.Entry(self, relief="flat"); self._editor.insert(0, value)
         self._editor.select_range(0,"end"); self._editor.focus_set()
@@ -977,12 +1091,16 @@ class App(BaseTk):
         if not p: return
         self.pdf_var.set(p); self.deed_pdf_path = Path(p); self._log(f"Selected deed PDF: {p}")
     def _on_drop_excel(self, event):
-        p = self._extract_path_from_dnd(event.data); if not p: return
+        p = self._extract_path_from_dnd(event.data)
+        if not p:
+            return
         if Path(p).suffix.lower() != ".xlsx":
             messagebox.showerror("Unsupported file","Please drop an .xlsx workbook."); return
         self.in_var.set(p); self.out_var.set(str(Path(p).with_suffix(".xml"))); self._log(f"Dropped workbook: {p}")
     def _on_drop_pdf(self, event):
-        p = self._extract_path_from_dnd(event.data); if not p: return
+        p = self._extract_path_from_dnd(event.data)
+        if not p:
+            return
         if Path(p).suffix.lower() != ".pdf":
             messagebox.showerror("Unsupported file","Please drop a .pdf deed file."); return
         self.pdf_var.set(p); self.deed_pdf_path = Path(p); self._log(f"Dropped deed PDF: {p}")
@@ -1053,7 +1171,30 @@ class App(BaseTk):
         self.console.configure(state="normal"); self.console.insert("end", msg+"\n")
         self.console.see("end"); self.console.configure(state="disabled")
 
-def main():
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+    if argv and argv[0] == "--selftest":
+        _run_self_tests()
+        return
+    if len(argv) == 2:
+        in_path = Path(argv[0])
+        out_path = Path(argv[1])
+        if not in_path.exists():
+            sys.stderr.write(f"Input workbook not found: {in_path}\n")
+            sys.exit(1)
+        try:
+            stats = convert_excel_to_xml_multi(in_path, out_path, logger=print)
+            print(f"Done. Sheets={stats['sheets']} Rows={stats['rows']} Lines={stats['lines']} Curves={stats['curves']}")
+        except Exception as exc:
+            sys.stderr.write(f"Conversion failed: {exc}\n")
+            sys.exit(1)
+        return
+    if argv:
+        sys.stderr.write("Usage:\n")
+        sys.stderr.write("  python OpenRoads_Geometry_Builder_Tool.py              # launch GUI\n")
+        sys.stderr.write("  python OpenRoads_Geometry_Builder_Tool.py <input.xlsx> <output.xml>\n")
+        sys.stderr.write("  python OpenRoads_Geometry_Builder_Tool.py --selftest\n")
+        sys.exit(1)
     try:
         app = App(); app.mainloop()
     except tk.TclError as e:
