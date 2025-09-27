@@ -369,6 +369,99 @@ def append_geometry_definition(parent: Element,
         else:
             continue
 
+
+def _sanitize_sheet_name(name: str, fallback: str) -> str:
+    base = str(name).strip() if name else ""
+    if not base:
+        base = fallback
+    cleaned = re.sub(r"[\\/*?:\[\]]", "_", base)
+    cleaned = cleaned[:31].rstrip()
+    return cleaned or fallback
+
+
+def write_geometries_to_xml(geometries,
+                            output_xml: Path,
+                            *,
+                            bearing_fmt: str,
+                            input_units: str,
+                            output_units: str,
+                            logger=None):
+    """Write one or more geometry dataframes to an XML file."""
+
+    root = Element("GeometryBuilderDefinitions")
+    rows = lines = curves = 0
+    geometry_names = []
+
+    for idx, (geom_name, df) in enumerate(geometries, start=1):
+        name = str(geom_name).strip() if geom_name else ""
+        if not name:
+            name = f"Geometry {idx}"
+        geometry_names.append(name)
+
+        if logger:
+            logger(f"Building geometry: {name!r}")
+
+        if df is not None and not df.empty and "Type" in df.columns:
+            tl = df["Type"].astype(str).str.strip().str.lower()
+            lcnt = int((tl == "line").sum())
+            ccnt = int(((tl == "curve") | (tl == "arc")).sum())
+            rows += int(len(df))
+            lines += lcnt
+            curves += ccnt
+            if logger:
+                logger(f"  Rows={len(df)} Lines={lcnt} Curves={ccnt}")
+        else:
+            if logger:
+                logger("  No 'Type' column or no usable rows; geometry will be empty.")
+
+        append_geometry_definition(root, df, name=name,
+                                   bearing_fmt=bearing_fmt,
+                                   in_units=input_units,
+                                   out_units=output_units)
+
+        if logger:
+            logger(f"  Appended geometry: {name!r}")
+
+    if logger:
+        logger("Writing XML file…")
+
+    output_xml = Path(output_xml)
+    if output_xml.parent and not output_xml.parent.exists():
+        output_xml.parent.mkdir(parents=True, exist_ok=True)
+
+    tree = ElementTree(root)
+    indent_etree(root)
+    tree.write(output_xml, encoding="UTF-16", xml_declaration=True)
+
+    if logger:
+        logger(f"Wrote XML → {output_xml}")
+
+    return {
+        "sheets": len(geometry_names),
+        "rows": rows,
+        "lines": lines,
+        "curves": curves,
+        "geometry_names": geometry_names,
+    }
+
+
+def save_geometries_to_workbook(geometries, workbook_path: Path):
+    """Persist geometry dataframe(s) to an Excel workbook."""
+
+    _require_excel_libs()
+    workbook_path = Path(workbook_path)
+    if workbook_path.parent and not workbook_path.parent.exists():
+        workbook_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with pandas.ExcelWriter(workbook_path, engine="openpyxl") as writer:
+        for idx, (name, df) in enumerate(geometries, start=1):
+            sheet_name = _sanitize_sheet_name(name, f"Geometry {idx}")
+            (df if df is not None else pandas.DataFrame()).to_excel(
+                writer, index=False, sheet_name=sheet_name or f"Geometry {idx}"
+            )
+
+    return workbook_path
+
 def convert_excel_to_xml_multi(input_xlsx: Path, output_xml: Path, logger=None,
                                bearing_fmt: str = "dms", input_units: str = "feet", output_units: str = "feet"):
     sheets = load_all_sheet_names(input_xlsx)
@@ -376,8 +469,7 @@ def convert_excel_to_xml_multi(input_xlsx: Path, output_xml: Path, logger=None,
         logger(f"Workbook has {len(sheets)} sheet(s): {', '.join(sheets)}")
         logger(f"Settings → Bearing Format: {bearing_fmt.upper()}, Input Units: {input_units.title()}, Output Units: {output_units.title()}")
 
-    root = Element("GeometryBuilderDefinitions")
-    rows = lines = curves = 0
+    geometries = []
 
     for name in sheets:
         if logger: logger(f"Reading sheet: {name!r}")
@@ -389,25 +481,18 @@ def convert_excel_to_xml_multi(input_xlsx: Path, output_xml: Path, logger=None,
             if logger: logger(f"  Failed to read sheet '{name}': {e}. Including empty geometry.")
             df = pandas.DataFrame() if pandas else None
 
-        if df is not None and not df.empty and "Type" in df.columns:
-            tl = df["Type"].astype(str).str.strip().str.lower()
-            lcnt = int((tl == "line").sum())
-            ccnt = int(((tl == "curve") | (tl == "arc")).sum())
-            rows += len(df); lines += lcnt; curves += ccnt
-            if logger: logger(f"  Found: Lines={lcnt} Curves={ccnt}")
-        else:
-            if logger: logger("  No 'Type' column or no usable rows; geometry will be empty.")
+        geometries.append((name, df))
 
-        append_geometry_definition(root, df, name=name,
-                                   bearing_fmt=bearing_fmt, in_units=input_units, out_units=output_units)
-        if logger: logger(f"  Appended geometry: {name!r}")
+    stats = write_geometries_to_xml(
+        geometries,
+        output_xml,
+        bearing_fmt=bearing_fmt,
+        input_units=input_units,
+        output_units=output_units,
+        logger=logger,
+    )
 
-    if logger: logger("Writing XML file…")
-    tree = ElementTree(root)
-    indent_etree(root)
-    tree.write(output_xml, encoding="UTF-16", xml_declaration=True)
-    if logger: logger(f"Wrote XML → {output_xml}")
-    return {"sheets": len(sheets), "rows": rows, "lines": lines, "curves": curves}
+    return stats
 
 # ---------------------- PDF EXTRACTION & PARSING ----------------------
 def try_set_tesseract_cmd(custom_path: str = None):
@@ -717,6 +802,81 @@ def dataframe_to_excel_schema(df, input_units_setting: str):
 
     out = out.dropna(how="all").fillna(value="")
     return out
+
+
+def convert_pdf_to_xml(pdf_path: Path,
+                       output_xml: Path,
+                       *,
+                       geometry_name: str = None,
+                       logger=None,
+                       bearing_fmt: str = "dms",
+                       input_units: str = "feet",
+                       output_units: str = "feet",
+                       assumed_unit: str = None,
+                       save_excel: Path = None,
+                       save_text: Path = None):
+    """Convert a deed PDF directly to an OpenRoads Geometry Builder XML file."""
+
+    if pandas is None:
+        raise RuntimeError("pandas is required for PDF conversion. Please install:\n  pip install pandas")
+
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    if logger:
+        logger(f"Extracting text from PDF: {pdf_path}")
+
+    text = extract_text_from_pdf(pdf_path, logger=logger) or ""
+    if not text.strip():
+        raise ValueError("No text could be extracted from the PDF.")
+
+    text_path = None
+    if save_text:
+        text_path = Path(save_text)
+        if text_path.parent and not text_path.parent.exists():
+            text_path.parent.mkdir(parents=True, exist_ok=True)
+        text_path.write_text(text, encoding="utf-8")
+        if logger:
+            logger(f"Wrote extracted text → {text_path}")
+
+    assumed = (assumed_unit or input_units).lower()
+    if assumed not in UNIT_TO_FEET:
+        raise ValueError(f"Unsupported assumed unit: {assumed}. Choose from: {', '.join(UNIT_TO_FEET)}")
+
+    if logger:
+        logger(f"Parsing deed calls (assumed units: {assumed})")
+
+    df_calls = parse_deed_text_to_dataframe(text, assumed_unit=assumed)
+    if logger:
+        logger(f"  Parsed rows: {len(df_calls)}")
+
+    df_excel = dataframe_to_excel_schema(df_calls, input_units_setting=input_units)
+
+    geom_name = geometry_name or pdf_path.stem
+    geometries = [(geom_name, df_excel)]
+
+    saved_excel_path = None
+    if save_excel:
+        saved_excel_path = save_geometries_to_workbook(geometries, save_excel)
+        if logger:
+            logger(f"Wrote intermediate Excel → {saved_excel_path}")
+
+    stats = write_geometries_to_xml(
+        geometries,
+        output_xml,
+        bearing_fmt=bearing_fmt,
+        input_units=input_units,
+        output_units=output_units,
+        logger=logger,
+    )
+
+    if text_path is not None:
+        stats["text_path"] = text_path
+    if saved_excel_path is not None:
+        stats["excel_path"] = Path(saved_excel_path)
+
+    return stats
 
 # ---------------------- UI, GRID, SETTINGS, etc. (unchanged from previous message) ----------------------
 class Splash(tk.Toplevel):
@@ -1600,32 +1760,87 @@ def _run_cli(argv):
         action="store_true",
         help="Suppress progress logging (a summary is still printed)",
     )
+    parser.add_argument(
+        "--from-pdf",
+        action="store_true",
+        help="Interpret the input as a deed PDF instead of an Excel workbook",
+    )
+    parser.add_argument(
+        "--geometry-name",
+        help="Override the geometry name in the generated XML (PDF mode)",
+    )
+    parser.add_argument(
+        "--assumed-pdf-units",
+        choices=tuple(UNIT_TO_FEET.keys()),
+        help="Units to assume when parsing distances from the PDF text (default: --input-units)",
+    )
+    parser.add_argument(
+        "--excel-output",
+        type=Path,
+        help="Optional path to save the intermediate Excel workbook when --from-pdf is used",
+    )
+    parser.add_argument(
+        "--text-output",
+        type=Path,
+        help="Optional path to save the extracted PDF text when --from-pdf is used",
+    )
 
     args = parser.parse_args(argv)
 
     if not args.input.exists():
-        raise FileNotFoundError(f"Input workbook not found: {args.input}")
+        raise FileNotFoundError(f"Input file not found: {args.input}")
+
+    if args.from_pdf:
+        if args.geometry_name and not args.geometry_name.strip():
+            parser.error("--geometry-name cannot be empty")
+        for opt_name in ("excel_output", "text_output"):
+            opt_value = getattr(args, opt_name)
+            if opt_value and opt_value.parent and not opt_value.parent.exists():
+                opt_value.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        for opt_name in ("geometry_name", "assumed_pdf_units", "excel_output", "text_output"):
+            if getattr(args, opt_name, None) is not None:
+                parser.error(f"--{opt_name.replace('_', '-')} is only valid with --from-pdf")
 
     if args.output.parent and not args.output.parent.exists():
         args.output.parent.mkdir(parents=True, exist_ok=True)
 
     logger = None if args.quiet else print
 
-    stats = convert_excel_to_xml_multi(
-        args.input,
-        args.output,
-        logger=logger,
-        bearing_fmt=args.bearing_format,
-        input_units=args.input_units,
-        output_units=args.output_units,
-    )
+    if args.from_pdf:
+        stats = convert_pdf_to_xml(
+            args.input,
+            args.output,
+            geometry_name=args.geometry_name,
+            logger=logger,
+            bearing_fmt=args.bearing_format,
+            input_units=args.input_units,
+            output_units=args.output_units,
+            assumed_unit=args.assumed_pdf_units,
+            save_excel=args.excel_output,
+            save_text=args.text_output,
+        )
+    else:
+        stats = convert_excel_to_xml_multi(
+            args.input,
+            args.output,
+            logger=logger,
+            bearing_fmt=args.bearing_format,
+            input_units=args.input_units,
+            output_units=args.output_units,
+        )
 
-    summary = (
-        f"Wrote XML → {args.output}\n"
+    summary_lines = [
+        f"Wrote XML → {args.output}",
         f"Sheets: {stats['sheets']}  Rows: {stats['rows']}  "
-        f"Lines: {stats['lines']}  Curves: {stats['curves']}"
-    )
-    print(summary)
+        f"Lines: {stats['lines']}  Curves: {stats['curves']}",
+    ]
+
+    names = stats.get("geometry_names") or []
+    if names:
+        summary_lines.append("Geometries: " + ", ".join(names))
+
+    print("\n".join(summary_lines))
 
 
 def main(argv=None):

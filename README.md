@@ -60,6 +60,23 @@ python "OpenRoads_Geometry_Builder_Tool (1).py" INPUT.xlsx OUTPUT.xml \
 
 The command validates that the source workbook exists and creates any missing folders for the target XML file. A summary reporting the number of sheets, rows, lines, and curves processed is printed when the conversion completes.
 
+### PDF → XML automation
+
+When you need to go from a deed PDF straight to a Geometry Builder XML file, enable the PDF mode. The script will extract the text, parse bearings/distances, build the intermediate Excel schema, and emit the XML in one pass:
+
+```bash
+python "OpenRoads_Geometry_Builder_Tool (1).py" deed.pdf output.xml \
+    --from-pdf \
+    --input-units feet \
+    --output-units feet \
+    [--geometry-name "Subdivision Phase 1"] \
+    [--assumed-pdf-units feet] \
+    [--excel-output calls.xlsx] \
+    [--text-output deed.txt]
+```
+
+Use `--assumed-pdf-units` to control how distances in the deed text should be interpreted. Optional `--excel-output` and `--text-output` switches allow you to persist the intermediate Excel workbook and the cleaned deed text for review.
+
 ## Project structure
 
 ```
