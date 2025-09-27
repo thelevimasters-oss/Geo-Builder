@@ -949,6 +949,11 @@ class App(BaseTk):
         self.pb_deed = ttk.Progressbar(pb_frame, orient="horizontal", mode="determinate", length=320, style="GPI.Small.Horizontal.TProgressbar")
         self.pb_deed.pack(side="left"); self.pb_deed["value"]=0; self.pb_deed["maximum"]=100
         tk.Label(parent, text="Preview / Edit Courses", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(8,4))
+        grid_toolbar = tk.Frame(parent, bg=PANEL_DARK); grid_toolbar.pack(fill="x", padx=16, pady=(0,4))
+        self.btn_insert_row = self._secondary_button(grid_toolbar, "Insert Row", self.insert_deed_row); self.btn_insert_row.pack(side="left")
+        self.btn_delete_row = self._secondary_button(grid_toolbar, "Delete Row", self.delete_deed_row); self.btn_delete_row.pack(side="left", padx=(8,0))
+        self._bind_hint(self.btn_insert_row, "Insert a blank course below the selected row")
+        self._bind_hint(self.btn_delete_row, "Delete the selected course row(s)")
         grid_frame = tk.Frame(parent, bg=PANEL_DARK); grid_frame.pack(fill="both", expand=True, padx=16, pady=(0,10))
         cols = ["Type","Bearing","Distance (ft)","Radius (ft)","Arc Length (ft)","Chord Length (ft)","Chord Bearing"]
         self.grid = EditableGrid(grid_frame, columns=cols, on_edit_commit=self._grid_edit_commit); self.grid.pack(fill="both", expand=True)
@@ -1006,6 +1011,53 @@ class App(BaseTk):
         except Exception: return
         if col_name in self.deed_df.columns and 0 <= idx < len(self.deed_df):
             self.deed_df.iat[idx, self.deed_df.columns.get_loc(col_name)] = new_val
+
+    def insert_deed_row(self):
+        if pandas is None:
+            messagebox.showerror("Missing dependency", "Row editing requires pandas.\nInstall with: pip install pandas"); return
+        cols = list(self.grid["columns"])
+        if self.deed_df is None or not isinstance(self.deed_df, pandas.DataFrame):
+            self.deed_df = pandas.DataFrame(columns=cols)
+        selection = self.grid.selection()
+        children = list(self.grid.get_children())
+        insert_index = len(children)
+        if selection:
+            try:
+                insert_index = list(children).index(selection[0]) + 1
+            except ValueError:
+                insert_index = len(children)
+        blank_values = ["" for _ in cols]
+        new_iid = self.grid.insert("", insert_index, values=blank_values)
+        self.grid.selection_set(new_iid); self.grid.focus(new_iid); self.grid.see(new_iid)
+        new_row_df = pandas.DataFrame([{c: "" for c in cols}])
+        if self.deed_df.empty:
+            self.deed_df = new_row_df
+        else:
+            top = self.deed_df.iloc[:insert_index] if insert_index > 0 else self.deed_df.iloc[:0]
+            bottom = self.deed_df.iloc[insert_index:]
+            self.deed_df = pandas.concat([top, new_row_df, bottom], ignore_index=True)
+
+    def delete_deed_row(self):
+        if pandas is None:
+            messagebox.showerror("Missing dependency", "Row editing requires pandas.\nInstall with: pip install pandas"); return
+        selection = self.grid.selection()
+        if not selection:
+            messagebox.showinfo("Select a row", "Please select one or more rows to delete."); return
+        children = list(self.grid.get_children())
+        indices = sorted((children.index(item) for item in selection if item in children), reverse=True)
+        if not indices:
+            return
+        for idx in indices:
+            self.grid.delete(children[idx])
+        if isinstance(self.deed_df, pandas.DataFrame) and not self.deed_df.empty:
+            drop_idx = [i for i in indices if i < len(self.deed_df)]
+            if drop_idx:
+                self.deed_df = self.deed_df.drop(self.deed_df.index[drop_idx]).reset_index(drop=True)
+        remaining = self.grid.get_children()
+        if remaining:
+            next_idx = min(indices[-1], len(remaining)-1)
+            next_iid = remaining[next_idx]
+            self.grid.selection_set(next_iid); self.grid.focus(next_iid); self.grid.see(next_iid)
     def save_deed_excel(self):
         if self.deed_df is None or self.deed_df.empty:
             messagebox.showerror("Nothing to save","No parsed courses to save. Extract first."); return
