@@ -927,7 +927,8 @@ class App(BaseTk):
 
         self.notebook = ttk.Notebook(card, style="ModernNotebook.TNotebook")
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
-        tab_deed  = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_deed_tab(tab_deed);  self.notebook.add(tab_deed, text="Deed PDF")
+        tab_qc    = tk.Frame(self.notebook, bg=PANEL_DARK);   self._build_deed_qc_tab(tab_qc);   self.notebook.add(tab_qc, text="Deed QC")
+        tab_call  = tk.Frame(self.notebook, bg=PANEL_DARK);   self._build_call_tab(tab_call);    self.notebook.add(tab_call, text="Call Extraction")
         tab_excel = tk.Frame(self.notebook, bg=PANEL_DARK); self._build_excel_tab(tab_excel); self.notebook.add(tab_excel, text="Excel → XML")
         console_frame = tk.Frame(card, bg=PANEL_DARK); console_frame.pack(fill="both", expand=True, padx=16, pady=(0,10))
         tk.Label(console_frame, text="Messages", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w")
@@ -985,7 +986,7 @@ class App(BaseTk):
         actions = tk.Frame(parent, bg=PANEL_DARK); actions.pack(fill="x", padx=16, pady=(6,12))
         btn_convert = self._cta_button(actions, "Convert"); btn_convert.pack(side="left"); btn_convert.configure(command=self.convert)
         self._bind_hint(btn_convert, "Convert the workbook to Geometry Builder XML")
-    def _build_deed_tab(self, parent):
+    def _build_deed_qc_tab(self, parent):
         tk.Label(parent, text="Deed PDF", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(16,6))
         pdf_row = tk.Frame(parent, bg=PANEL_DARK); pdf_row.pack(fill="x", padx=16, pady=4)
         self.pdf_var = getattr(self,"pdf_var", tk.StringVar())
@@ -1000,8 +1001,28 @@ class App(BaseTk):
                 self.pdf_entry.drop_target_register(DND_FILES); self.pdf_entry.dnd_bind("<<Drop>>", self._on_drop_pdf)
             except Exception: pass
         btns = tk.Frame(parent, bg=PANEL_DARK); btns.pack(fill="x", padx=16, pady=(10,6))
-        self.btn_extract = self._cta_button(btns, "Extract"); self.btn_extract.pack(side="left"); self.btn_extract.configure(command=self.extract_deed)
-        self._bind_hint(self.btn_extract, "Extract courses (Lines/Curves) from the deed PDF")
+        self.btn_extract_text = self._cta_button(btns, "Extract Text"); self.btn_extract_text.pack(side="left"); self.btn_extract_text.configure(command=self.extract_deed_text)
+        self._bind_hint(self.btn_extract_text, "Extract deed text into an editable preview")
+        btn_clear = self._secondary_button(btns, "Clear Text", self.clear_deed_text); btn_clear.pack(side="left", padx=(10,0))
+        self._bind_hint(btn_clear, "Clear the editable deed text")
+        tk.Label(parent, text="Editable Deed Text", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(8,4))
+        text_frame = tk.Frame(parent, bg=PANEL_DARK); text_frame.pack(fill="both", expand=True, padx=16, pady=(0,12))
+        self.deed_text = tk.Text(text_frame, wrap="word", font=("Consolas", 10),
+                                 bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
+                                 relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER)
+        self.deed_text.pack(side="left", fill="both", expand=True)
+        text_scroll = tk.Scrollbar(text_frame, orient="vertical", command=self.deed_text.yview)
+        text_scroll.pack(side="right", fill="y")
+        self.deed_text.configure(yscrollcommand=text_scroll.set)
+        info_msg = ("Extract the deed PDF to populate the text above.\n"
+                    "Review and edit as needed before running call extraction from the next tab.")
+        tk.Label(parent, text=info_msg, justify="left", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(anchor="w", padx=16, pady=(0,12))
+
+    def _build_call_tab(self, parent):
+        tk.Label(parent, text="Call Extraction", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(16,6))
+        btns = tk.Frame(parent, bg=PANEL_DARK); btns.pack(fill="x", padx=16, pady=(4,6))
+        self.btn_extract_calls = self._cta_button(btns, "Run Extraction"); self.btn_extract_calls.pack(side="left"); self.btn_extract_calls.configure(command=self.extract_calls_from_text)
+        self._bind_hint(self.btn_extract_calls, "Parse the edited deed text into calls")
         self.btn_save_excel = self._secondary_button(btns, "Save Excel…", self.save_deed_excel); self.btn_save_excel.pack(side="left", padx=(10,0))
         self._bind_hint(self.btn_save_excel, "Save parsed courses to an Excel file (converter-ready)")
         self.btn_send_converter = self._secondary_button(btns, "Send to Converter", self.send_to_converter); self.btn_send_converter.pack(side="left", padx=(10,0))
@@ -1032,15 +1053,16 @@ class App(BaseTk):
         if pdfplumber is None and fitz is None: self._log("pdfplumber / PyMuPDF not installed — text extraction may fail (pip install pdfplumber pymupdf).")
         if pytesseract is None: self._log("pytesseract not installed — OCR fallback disabled (pip install pytesseract).")
         self._refresh_grid_from_df()
-    # Deed actions & helpers (unchanged)
-    def extract_deed(self):
+    # Deed actions & helpers
+    def extract_deed_text(self):
         p = Path(self.pdf_var.get() or "")
         if not p or not p.exists() or p.suffix.lower() != ".pdf":
             messagebox.showerror("Missing or invalid PDF", "Please select a valid .pdf deed file."); return
-        if pandas is None:
-            messagebox.showerror("Missing dependency", "pandas is required for building the parsed table.\nInstall with: pip install pandas"); return
-        details = DetailsDialog(self, title="PDF Extraction Details"); logger = details.log
-        self.pb_deed["value"]=10; self._log(f"Extracting text from: {p}")
+        details = DetailsDialog(self, title="Deed Text Extraction Details"); logger = details.log
+        if getattr(self, "pb_deed", None):
+            self.pb_deed["value"] = 0
+            self.pb_deed["value"] = 10
+        self._log(f"Extracting text from: {p}")
         if self.settings.get("tesseract_path"):
             if try_set_tesseract_cmd(self.settings["tesseract_path"]): logger(f"Tesseract path set: {self.settings['tesseract_path']}")
             else: logger("Provided Tesseract path invalid; OCR may be skipped.")
@@ -1048,26 +1070,64 @@ class App(BaseTk):
             if try_set_tesseract_cmd(): logger("Tesseract auto-detected.")
             else: logger("Tesseract not found; OCR will be used only if installed/auto-detected.")
         try:
-            txt = extract_text_from_pdf(p, logger=logger); self.pb_deed["value"]=45
+            txt = extract_text_from_pdf(p, logger=logger) or ""
+            if getattr(self, "pb_deed", None): self.pb_deed["value"] = 55
             if not txt.strip():
-                logger("No text could be extracted; parsing will be empty.")
+                logger("No text could be extracted; editing area left blank.")
                 messagebox.showwarning("No text","No text found in the PDF (no text layer and OCR unavailable).")
         except Exception as e:
             logger(f"Extraction error: {e}"); messagebox.showerror("Extraction error", str(e)); return
+        if getattr(self, "deed_text", None):
+            self.deed_text.delete("1.0", "end")
+            if txt:
+                self.deed_text.insert("1.0", txt)
+        if getattr(self, "pb_deed", None): self.pb_deed["value"] = 100
+        self.deed_pdf_path = p
+        self._log("Deed text ready for QC. Review/edit before running call extraction.")
+
+    def clear_deed_text(self):
+        if getattr(self, "deed_text", None):
+            self.deed_text.delete("1.0", "end")
+        if getattr(self, "pb_deed", None): self.pb_deed["value"] = 0
+        if pandas is not None:
+            self.deed_df = pandas.DataFrame()
+        else:
+            self.deed_df = None
+        self._edited_rows = set()
+        self._refresh_grid_from_df()
+
+    def extract_calls_from_text(self):
+        if pandas is None:
+            messagebox.showerror("Missing dependency", "pandas is required for building the parsed table.\nInstall with: pip install pandas"); return
+        txt_widget = getattr(self, "deed_text", None)
+        deed_text = txt_widget.get("1.0", "end") if txt_widget else ""
+        if not deed_text.strip():
+            messagebox.showerror("Missing deed text", "Provide deed text (extract from PDF or paste it) before running call extraction.")
+            return
+        details = DetailsDialog(self, title="Call Extraction Details"); logger = details.log
+        if getattr(self, "pb_deed", None):
+            self.pb_deed["value"] = 0
+            self.pb_deed["value"] = 20
+        self._log("Running call extraction from deed text…")
         try:
             deed_units_default = self.settings["units_in"]
-            df_parsed = parse_deed_text_to_dataframe(txt, assumed_unit=deed_units_default); self.pb_deed["value"]=70
+            df_parsed = parse_deed_text_to_dataframe(deed_text, assumed_unit=deed_units_default)
             logger(f"Parsed rows: {len(df_parsed)}")
+            if getattr(self, "pb_deed", None): self.pb_deed["value"] = 65
         except Exception as e:
             logger(f"Parsing error: {e}"); messagebox.showerror("Parsing error", str(e)); return
         try:
             df_excel = dataframe_to_excel_schema(df_parsed, input_units_setting=self.settings["units_in"])
             self._edited_rows = set()
-            self.deed_df = df_excel; self._refresh_grid_from_df(); self.pb_deed["value"]=100
+            self.deed_df = df_excel; self._refresh_grid_from_df()
+            if getattr(self, "pb_deed", None): self.pb_deed["value"] = 100
             self._log(f"Parsed {len(df_excel)} course(s). Review/edit and Save Excel…")
             logger(f"Converted to Excel schema rows: {len(df_excel)}")
         except Exception as e:
             logger(f"Schema conversion error: {e}"); messagebox.showerror("Schema conversion error", str(e)); return
+
+    def extract_deed(self):  # backwards compatibility alias
+        self.extract_calls_from_text()
     def _refresh_grid_from_df(self):
         if not getattr(self, "grid", None):
             return
@@ -1223,7 +1283,13 @@ class App(BaseTk):
         if not self.deed_last_saved_excel or not self.deed_last_saved_excel.exists():
             messagebox.showwarning("Save first","Please save the Excel file first, then send it to the converter."); return
         self.in_var.set(str(self.deed_last_saved_excel)); self.out_var.set(str(self.deed_last_saved_excel.with_suffix(".xml")))
-        self.notebook.select(0); self._log("Excel path sent to converter tab.")
+        try:
+            tabs = self.notebook.tabs()
+            if tabs:
+                self.notebook.select(tabs[-1])
+        except Exception:
+            pass
+        self._log("Excel path sent to converter tab.")
     def browse_in(self):
         p = filedialog.askopenfilename(title="Select Excel workbook", filetypes=[("Excel files","*.xlsx")])
         if not p: return
@@ -1275,12 +1341,15 @@ class App(BaseTk):
             in_path = self.in_var.get() if hasattr(self,"in_var") else ""
             out_path = self.out_var.get() if hasattr(self,"out_var") else ""
             pdf_path = self.pdf_var.get() if hasattr(self,"pdf_var") else ""
+            deed_text_value = self.deed_text.get("1.0", "end") if hasattr(self, "deed_text") else ""
             selected_tab = None
             if hasattr(self, "notebook"):
                 try: selected_tab = self.notebook.index("current")
                 except Exception: selected_tab = None
             set_theme(mode); self.configure(bg=BG_DARK); self._build_ui()
             self.in_var.set(in_path); self.out_var.set(out_path); self.pdf_var.set(pdf_path)
+            if deed_text_value and hasattr(self, "deed_text"):
+                self.deed_text.insert("1.0", deed_text_value)
             if selected_tab is not None:
                 try: self.notebook.select(selected_tab)
                 except Exception: pass
