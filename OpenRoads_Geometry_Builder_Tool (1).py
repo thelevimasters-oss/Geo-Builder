@@ -22,7 +22,7 @@ This script is built to degrade gracefully if optional packages are missing:
 - Drag & drop: tkinterdnd2
 """
 
-import sys, math, re, datetime, shlex, io, traceback
+import sys, math, re, datetime, shlex, io, traceback, argparse
 from pathlib import Path
 
 # ---------------------- THEME / BRAND ----------------------
@@ -1084,12 +1084,82 @@ class App(BaseTk):
         self.console.configure(state="normal"); self.console.insert("end", msg+"\n")
         self.console.see("end"); self.console.configure(state="disabled")
 
-def main():
+def _run_cli(argv):
+    parser = argparse.ArgumentParser(
+        description="Convert an OpenRoads Geometry Excel workbook to XML without launching the GUI."
+    )
+    parser.add_argument("input", type=Path, help="Path to the source Excel workbook (.xlsx)")
+    parser.add_argument("output", type=Path, help="Path where the XML output should be written")
+    parser.add_argument(
+        "--bearing-format", "-b",
+        choices=("dms", "decimal"),
+        default="dms",
+        help="Bearing format used in the workbook (default: dms)",
+    )
+    parser.add_argument(
+        "--input-units", "-i",
+        choices=tuple(UNIT_TO_FEET.keys()),
+        default="feet",
+        help="Distance units used in the workbook (default: feet)",
+    )
+    parser.add_argument(
+        "--output-units", "-o",
+        choices=tuple(FEET_TO_UNIT.keys()),
+        default="feet",
+        help="Distance units for the generated XML (default: feet)",
+    )
+    parser.add_argument(
+        "--quiet", "-q",
+        action="store_true",
+        help="Suppress progress logging (a summary is still printed)",
+    )
+
+    args = parser.parse_args(argv)
+
+    if not args.input.exists():
+        raise FileNotFoundError(f"Input workbook not found: {args.input}")
+
+    if args.output.parent and not args.output.parent.exists():
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+
+    logger = None if args.quiet else print
+
+    stats = convert_excel_to_xml_multi(
+        args.input,
+        args.output,
+        logger=logger,
+        bearing_fmt=args.bearing_format,
+        input_units=args.input_units,
+        output_units=args.output_units,
+    )
+
+    summary = (
+        f"Wrote XML → {args.output}\n"
+        f"Sheets: {stats['sheets']}  Rows: {stats['rows']}  "
+        f"Lines: {stats['lines']}  Curves: {stats['curves']}"
+    )
+    print(summary)
+
+
+def main(argv=None):
+    argv = sys.argv[1:] if argv is None else list(argv)
+
+    if argv:
+        try:
+            _run_cli(argv)
+        except Exception as exc:
+            sys.stderr.write(f"Error: {exc}\n")
+            sys.exit(1)
+        return
+
     try:
-        app = App(); app.mainloop()
+        app = App()
+        app.mainloop()
     except tk.TclError as e:
         sys.stderr.write("GUI could not be started. Details:\n" + str(e) + "\n")
-        sys.stderr.write("CLI usage:\n  python OpenRoads_Geometry_Builder_Tool.py <input.xlsx> <output.xml>\n")
+        sys.stderr.write(
+            "Run with CLI arguments instead:\n  python OpenRoads_Geometry_Builder_Tool.py <input.xlsx> <output.xml>\n"
+        )
         sys.exit(1)
     except KeyboardInterrupt:
         # Allow Ctrl+C (or console window closure on Windows) to exit quietly.
