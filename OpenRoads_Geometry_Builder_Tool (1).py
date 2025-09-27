@@ -110,6 +110,13 @@ from xml.etree.ElementTree import Element, SubElement, ElementTree
 
 # ---------------------- GLOBAL EXCEPTION HOOK ----------------------
 def _excepthook(exc_type, exc, tb):
+    """Show a friendly error dialog for unexpected exceptions."""
+    # KeyboardInterrupt is raised on Windows when the console window hosting
+    # the script is closed. Treat it as a normal shutdown instead of an error
+    # so that the user is not shown a scary dialog on exit.
+    if exc_type is KeyboardInterrupt:
+        return
+
     err = "".join(traceback.format_exception(exc_type, exc, tb))
     try:
         root = tk.Tk(); root.withdraw()
@@ -1060,6 +1067,9 @@ def main():
         sys.stderr.write("GUI could not be started. Details:\n" + str(e) + "\n")
         sys.stderr.write("CLI usage:\n  python OpenRoads_Geometry_Builder_Tool.py <input.xlsx> <output.xml>\n")
         sys.exit(1)
+    except KeyboardInterrupt:
+        # Allow Ctrl+C (or console window closure on Windows) to exit quietly.
+        pass
 
 if __name__ == "__main__":
     main()
