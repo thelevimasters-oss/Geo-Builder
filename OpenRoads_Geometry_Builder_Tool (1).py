@@ -464,25 +464,94 @@ def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
             if pytesseract is None: logger("OCR skipped: pytesseract not available.")
     return text
 
+_CHAR_NORMALIZE_MAP = {
+    "′": "'",
+    "’": "'",
+    "`": "'",
+    "″": '"',
+    "“": '"',
+    "”": '"',
+    "º": "°",
+    "‐": "-",
+    "–": "-",
+    "—": "-",
+}
+
+_DEG_WORD_PATTERN = re.compile(r"(?i)\bDEG(?:REE|REES)?\b")
+_MIN_WORD_PATTERN = re.compile(r"(?i)\bMIN(?:UTE|UTES)?\b")
+_SEC_WORD_PATTERN = re.compile(r"(?i)\bSEC(?:OND|ONDS)?\b")
+_NORTH_WORD_PATTERN = re.compile(r"(?i)\bNORTH(?:ERLY)?\b")
+_SOUTH_WORD_PATTERN = re.compile(r"(?i)\bSOUTH(?:ERLY)?\b")
+_EAST_WORD_PATTERN = re.compile(r"(?i)\bEAST(?:ERLY)?\b")
+_WEST_WORD_PATTERN = re.compile(r"(?i)\bWEST(?:ERLY)?\b")
+_THEN_WORD_PATTERN = re.compile(r"(?i)\bTHEN\b")
+_UNIT_PUNCT_PATTERN = re.compile(r"(?i)(FEET|FT|M|METERS|CHAIN|CHAINS|CHS|ROD|RODS|RDS)[\.,](?=\s)")
+_NUM_PUNCT_PATTERN = re.compile(r"(?<=\d)[\.,](?=\s)")
+_SPACE_PATTERN = re.compile(r"[ \t]+")
+
+
+def _clean_text_for_parsing_with_map(t: str):
+    if not t:
+        return "", []
+
+    s = t
+    mapping = list(range(len(t)))
+
+    def _apply_char_map(char_map):
+        nonlocal s, mapping
+        chars = []
+        new_map = []
+        for ch, idx in zip(s, mapping):
+            repl = char_map.get(ch, ch)
+            for new_ch in repl:
+                chars.append(new_ch)
+                new_map.append(idx)
+        s = "".join(chars)
+        mapping = new_map
+
+    def _apply_regex(pattern, repl_fn):
+        nonlocal s, mapping
+        new_chunks = []
+        new_map = []
+        last_end = 0
+        for m in pattern.finditer(s):
+            start, end = m.span()
+            new_chunks.append(s[last_end:start])
+            new_map.extend(mapping[last_end:start])
+            repl_text = repl_fn(m)
+            if repl_text:
+                match_map = mapping[start:end]
+                if not match_map:
+                    fallback = mapping[start - 1] if start > 0 else (mapping[end] if end < len(mapping) else 0)
+                    match_map = [fallback]
+                new_chunks.append(repl_text)
+                rep_map = []
+                for i_char in range(len(repl_text)):
+                    rep_map.append(match_map[min(i_char, len(match_map) - 1)])
+                new_map.extend(rep_map)
+            last_end = end
+        new_chunks.append(s[last_end:])
+        new_map.extend(mapping[last_end:])
+        s = "".join(new_chunks)
+        mapping = new_map
+
+    _apply_char_map(_CHAR_NORMALIZE_MAP)
+    _apply_regex(_DEG_WORD_PATTERN, lambda m: "°")
+    _apply_regex(_MIN_WORD_PATTERN, lambda m: "'")
+    _apply_regex(_SEC_WORD_PATTERN, lambda m: '"')
+    _apply_regex(_NORTH_WORD_PATTERN, lambda m: "N")
+    _apply_regex(_SOUTH_WORD_PATTERN, lambda m: "S")
+    _apply_regex(_EAST_WORD_PATTERN, lambda m: "E")
+    _apply_regex(_WEST_WORD_PATTERN, lambda m: "W")
+    _apply_regex(_THEN_WORD_PATTERN, lambda m: "THENCE")
+    _apply_regex(_UNIT_PUNCT_PATTERN, lambda m: m.group(1))
+    _apply_regex(_NUM_PUNCT_PATTERN, lambda m: "")
+    _apply_regex(_SPACE_PATTERN, lambda m: " ")
+    return s, mapping
+
+
 def clean_text_for_parsing(t: str) -> str:
-    if not t: return ""
-    s = t.replace("′","'").replace("’","'").replace("`","'")
-    s = s.replace("″",'"').replace("“",'"').replace("”",'"')
-    s = s.replace("º","°").replace("‐","-").replace("–","-").replace("—","-")
-    # Normalize common prose variants so the parsing regexes are less brittle.
-    s = re.sub(r"(?i)\bDEG(?:REE|REES)?\b", "°", s)
-    s = re.sub(r"(?i)\bMIN(?:UTE|UTES)?\b", "'", s)
-    s = re.sub(r"(?i)\bSEC(?:OND|ONDS)?\b", '"', s)
-    s = re.sub(r"(?i)\bNORTH(?:ERLY)?\b", "N", s)
-    s = re.sub(r"(?i)\bSOUTH(?:ERLY)?\b", "S", s)
-    s = re.sub(r"(?i)\bEAST(?:ERLY)?\b", "E", s)
-    s = re.sub(r"(?i)\bWEST(?:ERLY)?\b", "W", s)
-    s = re.sub(r"(?i)\bTHEN\b", "THENCE", s)
-    # Remove stray punctuation trailing units or numbers that commonly appears after OCR.
-    s = re.sub(r"(?i)(FEET|FT|M|METERS|CHAIN|CHAINS|CHS|ROD|RODS|RDS)[\.,](?=\s)", r"\1", s)
-    s = re.sub(r"(?<=\d)[\.,](?=\s)", "", s)
-    s = re.sub(r"[ \t]+"," ", s)
-    return s
+    return _clean_text_for_parsing_with_map(t)[0]
 
 def _to_float(s: str):
     if s is None: return None
@@ -528,15 +597,12 @@ _CURVE_PATTERN = re.compile(r"""
     (?: .*? \bCHORD\s+BEARS?\s+(N|S)\s*([0-9]{1,3}(?:[°º]\s*\d{1,2}(?:['’]\s*\d{1,2}(?:"|”)? )?|\d+(?:\.\d+)?))\s*(E|W) )?
     """, re.IGNORECASE | re.DOTALL | re.VERBOSE)
 
-def parse_deed_text_to_dataframe(text: str, assumed_unit: str = "feet"):
-    if pandas is None:
-        raise RuntimeError("pandas is required to build the parsed table. Please install:\n  pip install pandas")
-    s = clean_text_for_parsing(text)
+
+def _parse_deed_text_entries(cleaned_text: str, assumed_unit: str):
     entries = []
     taken_spans = []
 
-    # Curves first so we can avoid mis-classifying their descriptive prose as line calls.
-    for m in _CURVE_PATTERN.finditer(s):
+    for m in _CURVE_PATTERN.finditer(cleaned_text):
         rl, rad, rad_unit, arc_len, arc_unit, chord_len, chord_unit, cns, cbody, cew = m.groups()
         radius = _to_float(rad)
         r_unit = normalize_unit_token(rad_unit, default_unit=assumed_unit)
@@ -546,10 +612,10 @@ def parse_deed_text_to_dataframe(text: str, assumed_unit: str = "feet"):
         chord_u = normalize_unit_token(chord_unit, default_unit=assumed_unit) if chord_unit else None
         chord_bearing = f"{cns} {cbody} {cew}".upper().replace("  "," ") if (cns and cbody and cew) else None
         start, end = m.span()
-        entries.append((start, {
-            "Type":"Curve","Bearing":None,"Distance":None,"DistanceUnit":None,
-            "Radius":radius,"RadiusUnit":r_unit,"Arc Length":arc,"ArcUnit":arc_u,
-            "Chord Length":chord,"ChordUnit":chord_u,"Chord Bearing":chord_bearing
+        entries.append((start, end, {
+            "Type": "Curve", "Bearing": None, "Distance": None, "DistanceUnit": None,
+            "Radius": radius, "RadiusUnit": r_unit, "Arc Length": arc, "ArcUnit": arc_u,
+            "Chord Length": chord, "ChordUnit": chord_u, "Chord Bearing": chord_bearing
         }))
         taken_spans.append((start, end))
 
@@ -559,47 +625,71 @@ def parse_deed_text_to_dataframe(text: str, assumed_unit: str = "feet"):
                 return True
         return False
 
-    # Lines (quadrant)
-    for m in _LINE_QD_PATTERN.finditer(s):
+    for m in _LINE_QD_PATTERN.finditer(cleaned_text):
         if _is_within_taken(m.start()):
             continue
         ns, body, ew, dist, unit = m.groups()
-        bearing = f"{ns} {body} {ew}".upper().replace("  "," ")
+        bearing = f"{ns} {body} {ew}".upper().replace("  ", " ")
         unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
-        entries.append((m.start(), {
-            "Type":"Line","Bearing":bearing,"Distance":_to_float(dist),"DistanceUnit":unit_norm,
-            "Radius":None,"RadiusUnit":None,"Arc Length":None,"ArcUnit":None,
-            "Chord Length":None,"ChordUnit":None,"Chord Bearing":None
+        entries.append((m.start(), m.end(), {
+            "Type": "Line", "Bearing": bearing, "Distance": _to_float(dist), "DistanceUnit": unit_norm,
+            "Radius": None, "RadiusUnit": None, "Arc Length": None, "ArcUnit": None,
+            "Chord Length": None, "ChordUnit": None, "Chord Bearing": None
         }))
 
-    # Lines (azimuth)
-    for m in _LINE_AZ_PATTERN.finditer(s):
+    for m in _LINE_AZ_PATTERN.finditer(cleaned_text):
         if _is_within_taken(m.start()):
             continue
         az_deg, dist, unit = m.groups()
         bearing = str(az_deg).strip()
         unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
-        entries.append((m.start(), {
-            "Type":"Line","Bearing":bearing,"Distance":_to_float(dist),"DistanceUnit":unit_norm,
-            "Radius":None,"RadiusUnit":None,"Arc Length":None,"ArcUnit":None,
-            "Chord Length":None,"ChordUnit":None,"Chord Bearing":None
+        entries.append((m.start(), m.end(), {
+            "Type": "Line", "Bearing": bearing, "Distance": _to_float(dist), "DistanceUnit": unit_norm,
+            "Radius": None, "RadiusUnit": None, "Arc Length": None, "ArcUnit": None,
+            "Chord Length": None, "ChordUnit": None, "Chord Bearing": None
         }))
 
-    # Sort by textual order and drop duplicate spans.
     entries.sort(key=lambda tup: tup[0])
-    ordered_rows = []
+    ordered_entries = []
     seen_positions = set()
-    for pos, data in entries:
-        if pos in seen_positions:
+    for start, end, data in entries:
+        if start in seen_positions:
             continue
-        seen_positions.add(pos)
-        ordered_rows.append(data)
+        seen_positions.add(start)
+        ordered_entries.append((start, end, data))
+    return ordered_entries
 
+
+def parse_deed_text_to_dataframe(text: str, assumed_unit: str = "feet"):
+    if pandas is None:
+        raise RuntimeError("pandas is required to build the parsed table. Please install:\n  pip install pandas")
+    cleaned_text = clean_text_for_parsing(text)
+    ordered_entries = _parse_deed_text_entries(cleaned_text, assumed_unit)
+    ordered_rows = [data for _, _, data in ordered_entries]
     df = pandas.DataFrame(ordered_rows, columns=[
-        "Type","Bearing","Distance","DistanceUnit","Radius","RadiusUnit",
-        "Arc Length","ArcUnit","Chord Length","ChordUnit","Chord Bearing"
+        "Type", "Bearing", "Distance", "DistanceUnit", "Radius", "RadiusUnit",
+        "Arc Length", "ArcUnit", "Chord Length", "ChordUnit", "Chord Bearing"
     ])
     return df
+
+
+def find_call_spans_in_text(text: str, assumed_unit: str = "feet"):
+    cleaned_text, mapping = _clean_text_for_parsing_with_map(text)
+    if not cleaned_text or not mapping:
+        return []
+    ordered_entries = _parse_deed_text_entries(cleaned_text, assumed_unit)
+    spans = []
+    mapping_len = len(mapping)
+    for start, end, data in ordered_entries:
+        if start >= mapping_len:
+            continue
+        orig_start = mapping[start]
+        end_index = min(max(end - 1, start), mapping_len - 1)
+        orig_end = mapping[end_index] + 1
+        if orig_end <= orig_start:
+            orig_end = orig_start + 1
+        spans.append((orig_start, orig_end, data.get("Type")))
+    return spans
 
 def dataframe_to_excel_schema(df, input_units_setting: str):
     if pandas is None:
@@ -1003,6 +1093,8 @@ class App(BaseTk):
         btns = tk.Frame(parent, bg=PANEL_DARK); btns.pack(fill="x", padx=16, pady=(10,6))
         self.btn_extract_text = self._cta_button(btns, "Extract Text"); self.btn_extract_text.pack(side="left"); self.btn_extract_text.configure(command=self.extract_deed_text)
         self._bind_hint(self.btn_extract_text, "Extract deed text into an editable preview")
+        self.btn_highlight_calls = self._secondary_button(btns, "Highlight Calls", self.highlight_calls_preview); self.btn_highlight_calls.pack(side="left", padx=(10,0))
+        self._bind_hint(self.btn_highlight_calls, "Analyze the deed text and highlight detected calls")
         btn_clear = self._secondary_button(btns, "Clear Text", self.clear_deed_text); btn_clear.pack(side="left", padx=(10,0))
         self._bind_hint(btn_clear, "Clear the editable deed text")
         tk.Label(parent, text="Editable Deed Text", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(8,4))
@@ -1014,6 +1106,7 @@ class App(BaseTk):
         text_scroll = tk.Scrollbar(text_frame, orient="vertical", command=self.deed_text.yview)
         text_scroll.pack(side="right", fill="y")
         self.deed_text.configure(yscrollcommand=text_scroll.set)
+        self._configure_call_highlight_tags()
         info_msg = ("Extract the deed PDF to populate the text above.\n"
                     "Review and edit as needed before running call extraction from the next tab.")
         tk.Label(parent, text=info_msg, justify="left", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(anchor="w", padx=16, pady=(0,12))
@@ -1084,10 +1177,14 @@ class App(BaseTk):
         if getattr(self, "pb_deed", None): self.pb_deed["value"] = 100
         self.deed_pdf_path = p
         self._log("Deed text ready for QC. Review/edit before running call extraction.")
+        if txt and txt.strip():
+            self.highlight_calls_preview(quiet=True)
 
     def clear_deed_text(self):
         if getattr(self, "deed_text", None):
             self.deed_text.delete("1.0", "end")
+            self.deed_text.tag_remove("call_line", "1.0", "end")
+            self.deed_text.tag_remove("call_curve", "1.0", "end")
         if getattr(self, "pb_deed", None): self.pb_deed["value"] = 0
         if pandas is not None:
             self.deed_df = pandas.DataFrame()
@@ -1128,6 +1225,51 @@ class App(BaseTk):
 
     def extract_deed(self):  # backwards compatibility alias
         self.extract_calls_from_text()
+
+    def highlight_calls_preview(self, quiet=False):
+        if not getattr(self, "deed_text", None):
+            return
+        self._configure_call_highlight_tags()
+        self.deed_text.tag_remove("call_line", "1.0", "end")
+        self.deed_text.tag_remove("call_curve", "1.0", "end")
+        text_value = self.deed_text.get("1.0", "end-1c")
+        if not text_value.strip():
+            if not quiet:
+                messagebox.showinfo("No deed text", "Provide deed text (extract from PDF or paste it) before highlighting calls.")
+            return
+        try:
+            spans = find_call_spans_in_text(text_value, assumed_unit=self.settings.get("units_in", "feet"))
+        except Exception as e:
+            self._log(f"Call preview error: {e}")
+            if not quiet:
+                messagebox.showerror("Call preview error", str(e))
+            return
+        if not spans:
+            self._log("Call preview: no call patterns detected.")
+            if not quiet:
+                messagebox.showinfo("No calls detected", "No call patterns were detected in the deed text.")
+            return
+        for start, end, typ in spans:
+            if end <= start:
+                continue
+            tag = "call_curve" if (typ and str(typ).lower() == "curve") else "call_line"
+            self.deed_text.tag_add(tag, f"1.0+{start}c", f"1.0+{end}c")
+        self._log(f"Call preview: highlighted {len(spans)} potential call(s).")
+
+    def _configure_call_highlight_tags(self):
+        if not getattr(self, "deed_text", None):
+            return
+        if THEME_MODE == "dark":
+            line_bg = "#1F4D32"
+            curve_bg = "#2B4066"
+        else:
+            line_bg = "#C7F9CC"
+            curve_bg = "#D6E4FF"
+        try:
+            self.deed_text.tag_configure("call_line", background=line_bg)
+            self.deed_text.tag_configure("call_curve", background=curve_bg)
+        except Exception:
+            pass
     def _refresh_grid_from_df(self):
         if not getattr(self, "grid", None):
             return
@@ -1351,6 +1493,7 @@ class App(BaseTk):
             self.in_var.set(in_path); self.out_var.set(out_path); self.pdf_var.set(pdf_path)
             if deed_text_value and hasattr(self, "deed_text"):
                 self.deed_text.insert("1.0", deed_text_value)
+                self.highlight_calls_preview(quiet=True)
             if selected_tab is not None:
                 try: self.notebook.select(selected_tab)
                 except Exception: pass
