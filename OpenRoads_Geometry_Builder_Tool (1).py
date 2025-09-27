@@ -796,6 +796,8 @@ class App(BaseTk):
         self.settings = {"theme":THEME_MODE,"units_in":"feet","units_out":"feet","bearing_fmt":"dms","tesseract_path":""}
         self.deed_df = pandas.DataFrame() if pandas else None
         self.deed_pdf_path = None; self.deed_last_saved_excel = None
+        self.console = None
+        self._log_history = ["Ready."]
         self.withdraw(); self.after(10, lambda: Splash(self, duration_ms=1100, on_done=self._after_splash))
     def _after_splash(self): self.deiconify(); self._build_ui()
     def _build_ui(self):
@@ -828,7 +830,8 @@ class App(BaseTk):
         tk.Label(console_frame, text="Messages", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w")
         self.console = tk.Text(console_frame, height=10, bg=CONSOLE_BG, fg=CONSOLE_FG, relief="flat", font=("Consolas",10),
                                wrap="word", highlightthickness=1, highlightbackground=PANEL_BORDER)
-        self.console.pack(fill="both", expand=True); self.console.insert("end","Ready.\n"); self.console.configure(state="disabled")
+        self.console.pack(fill="both", expand=True)
+        self._render_log_history()
         self.status_bar = tk.Frame(self, bg=STATUS_BG, height=26); self.status_bar.pack(side="bottom", fill="x")
         self.status_lbl = tk.Label(self.status_bar, text="Tip: Use Settings (⚙) to set units, bearing format, and OCR path.",
                                    bg=STATUS_BG, fg=STATUS_FG, anchor="w", padx=10, font=("Segoe UI",9))
@@ -1080,9 +1083,23 @@ class App(BaseTk):
         widget.bind("<Leave>", lambda e: self._set_hint(""))
     def _set_hint(self, msg):
         self.status_lbl.config(text=("Ready." if not msg else msg))
+    def _render_log_history(self):
+        if not getattr(self, "console", None):
+            return
+        self.console.configure(state="normal")
+        self.console.delete("1.0", "end")
+        for line in self._log_history:
+            self.console.insert("end", line + "\n")
+        self.console.see("end")
+        self.console.configure(state="disabled")
+
     def _log(self, msg):
-        self.console.configure(state="normal"); self.console.insert("end", msg+"\n")
-        self.console.see("end"); self.console.configure(state="disabled")
+        self._log_history.append(msg)
+        if getattr(self, "console", None):
+            self.console.configure(state="normal")
+            self.console.insert("end", msg+"\n")
+            self.console.see("end")
+            self.console.configure(state="disabled")
 
 def _run_cli(argv):
     parser = argparse.ArgumentParser(
