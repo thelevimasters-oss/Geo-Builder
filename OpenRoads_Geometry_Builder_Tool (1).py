@@ -781,6 +781,9 @@ class EditableGrid(ttk.Treeview):
         for c in columns:
             self.heading(c, text=c); self.column(c, width=150, stretch=True, anchor="w")
         self._editor = None; self.bind("<Double-1>", self._begin_edit)
+        # Row highlighting tags for extraction confidence/edits.
+        self.tag_configure("uncertain", background="#FFF4B0", foreground="#1E1E1E")
+        self.tag_configure("edited", background="#C7F9CC", foreground="#123822")
     def _begin_edit(self, event):
         if self.identify("region", event.x, event.y) != "cell": return
         row_id = self.identify_row(event.y); col_id = self.identify_column(event.x)
@@ -834,6 +837,8 @@ class App(BaseTk):
         self.deed_pdf_path = None; self.deed_last_saved_excel = None
         self.console = None
         self._log_history = ["Ready."]
+        self.grid_row_states = {}
+        self._edited_rows = set()
         self.withdraw(); self.after(10, lambda: Splash(self, duration_ms=1100, on_done=self._after_splash))
     def _after_splash(self): self.deiconify(); self._build_ui()
     def _build_ui(self):
@@ -959,10 +964,12 @@ class App(BaseTk):
         self.grid = EditableGrid(grid_frame, columns=cols, on_edit_commit=self._grid_edit_commit); self.grid.pack(fill="both", expand=True)
         vsb = tk.Scrollbar(grid_frame, orient="vertical", command=self.grid.yview); hsb = tk.Scrollbar(grid_frame, orient="horizontal", command=self.grid.xview)
         self.grid.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set); vsb.pack(side="right", fill="y"); hsb.pack(side="bottom", fill="x")
+        self._configure_grid_tags()
         if pandas is None: self._log("pandas not installed — PDF parsing and Excel saving will be disabled until installed (pip install pandas).")
         if openpyxl is None: self._log("openpyxl not installed — saving Excel will be disabled (pip install openpyxl).")
         if pdfplumber is None and fitz is None: self._log("pdfplumber / PyMuPDF not installed — text extraction may fail (pip install pdfplumber pymupdf).")
         if pytesseract is None: self._log("pytesseract not installed — OCR fallback disabled (pip install pytesseract).")
+        self._refresh_grid_from_df()
     # Deed actions & helpers (unchanged)
     def extract_deed(self):
         p = Path(self.pdf_var.get() or "")
@@ -993,24 +1000,42 @@ class App(BaseTk):
             logger(f"Parsing error: {e}"); messagebox.showerror("Parsing error", str(e)); return
         try:
             df_excel = dataframe_to_excel_schema(df_parsed, input_units_setting=self.settings["units_in"])
+            self._edited_rows = set()
             self.deed_df = df_excel; self._refresh_grid_from_df(); self.pb_deed["value"]=100
             self._log(f"Parsed {len(df_excel)} course(s). Review/edit and Save Excel…")
             logger(f"Converted to Excel schema rows: {len(df_excel)}")
         except Exception as e:
             logger(f"Schema conversion error: {e}"); messagebox.showerror("Schema conversion error", str(e)); return
     def _refresh_grid_from_df(self):
+        if not getattr(self, "grid", None):
+            return
         self.grid.delete(*self.grid.get_children())
-        if self.deed_df is None or self.deed_df.empty: return
-        for _, r in self.deed_df.iterrows():
+        self.grid_row_states = {}
+        if self.deed_df is None or self.deed_df.empty:
+            self._configure_grid_tags()
+            return
+        for idx, r in self.deed_df.iterrows():
             vals = [r.get(c,"") for c in self.grid["columns"]]
             if pandas is not None: vals = [("" if (isinstance(v,float) and pandas.isna(v)) else v) for v in vals]
-            self.grid.insert("", "end", values=vals)
+            row_id = self.grid.insert("", "end", values=vals)
+            populated_cols = {col for col, val in zip(self.grid["columns"], vals) if str(val).strip() != ""}
+            edited = idx in self._edited_rows
+            state_auto = set() if edited else populated_cols
+            self.grid_row_states[row_id] = {"edited": edited, "auto": state_auto}
+            self._apply_row_style(row_id)
+        self._configure_grid_tags()
     def _grid_edit_commit(self, row_id, col_name, new_val):
         if self.deed_df is None or self.deed_df.empty: return
         try: idx = list(self.grid.get_children()).index(row_id)
         except Exception: return
         if col_name in self.deed_df.columns and 0 <= idx < len(self.deed_df):
             self.deed_df.iat[idx, self.deed_df.columns.get_loc(col_name)] = new_val
+            self._edited_rows.add(idx)
+        state = self.grid_row_states.get(row_id)
+        if state is not None:
+            state.setdefault("auto", set()).discard(col_name)
+            state["edited"] = True
+            self._apply_row_style(row_id)
 
     def insert_deed_row(self):
         if pandas is None:
@@ -1029,6 +1054,8 @@ class App(BaseTk):
         blank_values = ["" for _ in cols]
         new_iid = self.grid.insert("", insert_index, values=blank_values)
         self.grid.selection_set(new_iid); self.grid.focus(new_iid); self.grid.see(new_iid)
+        self.grid_row_states[new_iid] = {"edited": False, "auto": set()}
+        self._apply_row_style(new_iid)
         new_row_df = pandas.DataFrame([{c: "" for c in cols}])
         if self.deed_df.empty:
             self.deed_df = new_row_df
@@ -1036,6 +1063,7 @@ class App(BaseTk):
             top = self.deed_df.iloc[:insert_index] if insert_index > 0 else self.deed_df.iloc[:0]
             bottom = self.deed_df.iloc[insert_index:]
             self.deed_df = pandas.concat([top, new_row_df, bottom], ignore_index=True)
+        self._edited_rows = {i if i < insert_index else i+1 for i in self._edited_rows}
 
     def delete_deed_row(self):
         if pandas is None:
@@ -1048,16 +1076,52 @@ class App(BaseTk):
         if not indices:
             return
         for idx in indices:
-            self.grid.delete(children[idx])
+            iid = children[idx]
+            self.grid.delete(iid)
+            self.grid_row_states.pop(iid, None)
         if isinstance(self.deed_df, pandas.DataFrame) and not self.deed_df.empty:
             drop_idx = [i for i in indices if i < len(self.deed_df)]
             if drop_idx:
                 self.deed_df = self.deed_df.drop(self.deed_df.index[drop_idx]).reset_index(drop=True)
+                new_edited = set()
+                shift_points = set(drop_idx)
+                for old_idx in self._edited_rows:
+                    if old_idx in shift_points:
+                        continue
+                    shift = sum(1 for d in drop_idx if d < old_idx)
+                    new_idx = old_idx - shift
+                    if new_idx >= 0:
+                        new_edited.add(new_idx)
+                self._edited_rows = new_edited
         remaining = self.grid.get_children()
         if remaining:
             next_idx = min(indices[-1], len(remaining)-1)
             next_iid = remaining[next_idx]
             self.grid.selection_set(next_iid); self.grid.focus(next_iid); self.grid.see(next_iid)
+    def _configure_grid_tags(self):
+        if not getattr(self, "grid", None):
+            return
+        try:
+            if THEME_MODE == "dark":
+                self.grid.tag_configure("uncertain", background="#7B6F00", foreground="#FFF7C2")
+                self.grid.tag_configure("edited", background="#1F4D32", foreground="#DFF7E7")
+            else:
+                self.grid.tag_configure("uncertain", background="#FFF4B0", foreground="#1E1E1E")
+                self.grid.tag_configure("edited", background="#C7F9CC", foreground="#123822")
+        except Exception:
+            pass
+        for row_id in list(self.grid_row_states.keys()):
+            self._apply_row_style(row_id)
+    def _apply_row_style(self, row_id):
+        state = self.grid_row_states.get(row_id)
+        if state is None or not getattr(self, "grid", None):
+            return
+        tags = []
+        if state.get("edited"):
+            tags.append("edited")
+        elif state.get("auto"):
+            tags.append("uncertain")
+        self.grid.item(row_id, tags=tags)
     def save_deed_excel(self):
         if self.deed_df is None or self.deed_df.empty:
             messagebox.showerror("Nothing to save","No parsed courses to save. Extract first."); return
