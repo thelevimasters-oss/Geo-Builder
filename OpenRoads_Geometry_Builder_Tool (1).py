@@ -25,7 +25,7 @@ This script is built to degrade gracefully if optional packages are missing:
 import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 # ---------------------- THEME / BRAND ----------------------
 GPI_GREEN  = "#0F3320"
@@ -1209,6 +1209,7 @@ class App(BaseTk):
         self._log_history = ["Ready."]
         self.grid_row_states = {}
         self._edited_rows = set()
+        self.manual_call_entries: List[Dict[str, Any]] = []
         self.origin_easting_var = tk.StringVar(value=self.settings.get("origin_easting","0.0"))
         self.origin_northing_var = tk.StringVar(value=self.settings.get("origin_northing","0.0"))
         self.source_epsg_var = tk.StringVar(value=self.settings.get("source_epsg",""))
@@ -1346,8 +1347,14 @@ class App(BaseTk):
         btns = tk.Frame(parent, bg=PANEL_DARK); btns.pack(fill="x", padx=16, pady=(10,6))
         self.btn_extract_text = self._cta_button(btns, "Extract Text"); self.btn_extract_text.pack(side="left"); self.btn_extract_text.configure(command=self.extract_deed_text)
         self._bind_hint(self.btn_extract_text, "Extract deed text into an editable preview")
-        self.btn_highlight_calls = self._secondary_button(btns, "Highlight Calls", self.highlight_calls_preview); self.btn_highlight_calls.pack(side="left", padx=(10,0))
-        self._bind_hint(self.btn_highlight_calls, "Analyze the deed text and highlight detected calls")
+        self.btn_add_line = self._secondary_button(btns, "Add Line", self.add_manual_line); self.btn_add_line.pack(side="left", padx=(10,0))
+        self._bind_hint(self.btn_add_line, "Select line text in the deed and add it to the call list")
+        self.btn_add_curve = self._secondary_button(btns, "Add Curve", self.add_manual_curve); self.btn_add_curve.pack(side="left", padx=(10,0))
+        self._bind_hint(self.btn_add_curve, "Select curve text in the deed and add it to the call list")
+        self.btn_edit_line = self._secondary_button(btns, "Edit Line", self.edit_manual_line); self.btn_edit_line.pack(side="left", padx=(10,0))
+        self._bind_hint(self.btn_edit_line, "Adjust the highlighted line call to use different deed text")
+        self.btn_edit_curve = self._secondary_button(btns, "Edit Curve", self.edit_manual_curve); self.btn_edit_curve.pack(side="left", padx=(10,0))
+        self._bind_hint(self.btn_edit_curve, "Adjust the highlighted curve call to use different deed text")
         btn_clear = self._secondary_button(btns, "Clear Text", self.clear_deed_text); btn_clear.pack(side="left", padx=(10,0))
         self._bind_hint(btn_clear, "Clear the editable deed text")
         tk.Label(parent, text="Editable Deed Text", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(8,4))
@@ -1538,6 +1545,7 @@ class App(BaseTk):
             self.deed_text.delete("1.0", "end")
             if txt:
                 self.deed_text.insert("1.0", txt)
+            self.manual_call_entries = []
         if getattr(self, "pb_deed", None): self.pb_deed["value"] = 100
         self.deed_pdf_path = p
         self._log("Deed text ready for QC. Review/edit before running call extraction.")
@@ -1549,6 +1557,7 @@ class App(BaseTk):
             self.deed_text.delete("1.0", "end")
             self.deed_text.tag_remove("call_line", "1.0", "end")
             self.deed_text.tag_remove("call_curve", "1.0", "end")
+        self.manual_call_entries = []
         if getattr(self, "pb_deed", None): self.pb_deed["value"] = 0
         if pandas is not None:
             self.deed_df = pandas.DataFrame()
@@ -1556,6 +1565,102 @@ class App(BaseTk):
             self.deed_df = None
         self._edited_rows = set()
         self._refresh_grid_from_df()
+
+    def _parse_deed_text_with_manual_entries(self, deed_text: str, assumed_unit: str):
+        if pandas is None:
+            raise RuntimeError("pandas is required to build the parsed table. Please install:\n  pip install pandas")
+        columns = [
+            "Type",
+            "Bearing",
+            "Distance",
+            "DistanceUnit",
+            "Radius",
+            "RadiusUnit",
+            "Arc Length",
+            "ArcUnit",
+            "Chord Length",
+            "ChordUnit",
+            "Chord Bearing",
+        ]
+        cleaned_text, mapping = _clean_text_for_parsing_with_map(deed_text)
+        ordered_entries = _parse_deed_text_entries(cleaned_text, assumed_unit)
+        combined: List[Tuple[int, Dict[str, Any], bool]] = []
+        for start, _, data in ordered_entries:
+            if not isinstance(data, dict):
+                continue
+            orig_start = mapping[start] if start < len(mapping) else len(deed_text)
+            combined.append((orig_start, dict(data), False))
+        manual_count = 0
+        for entry in self.manual_call_entries:
+            start = entry.get("start")
+            end = entry.get("end")
+            if not isinstance(start, int) or start < 0:
+                continue
+            call_type = str(entry.get("type", "") or "").strip().title()
+            stored_data = entry.get("data") if isinstance(entry.get("data"), dict) else None
+            if not call_type and isinstance(stored_data, dict):
+                call_type = str(stored_data.get("Type", "") or "").strip().title()
+            snippet = ""
+            if isinstance(end, int) and start < end <= len(deed_text):
+                snippet = deed_text[start:end]
+            elif start < len(deed_text):
+                snippet = deed_text[start: min(start + 400, len(deed_text))]
+            refreshed = stored_data
+            if snippet.strip() and call_type:
+                try:
+                    refreshed = self._analyze_manual_call(snippet, call_type)
+                except Exception:
+                    pass
+            if not isinstance(refreshed, dict):
+                continue
+            entry["data"] = refreshed
+            combined.append((start, dict(refreshed), True))
+        if not combined:
+            return pandas.DataFrame(columns=columns), manual_count
+        combined.sort(key=lambda item: (item[0], 1 if item[2] else 0))
+        rows: List[Dict[str, Any]] = []
+        seen_keys = set()
+        for position, data, is_manual in combined:
+            if not isinstance(data, dict):
+                continue
+            row = {
+                "Type": data.get("Type"),
+                "Bearing": data.get("Bearing"),
+                "Distance": data.get("Distance"),
+                "DistanceUnit": data.get("DistanceUnit"),
+                "Radius": data.get("Radius"),
+                "RadiusUnit": data.get("RadiusUnit"),
+                "Arc Length": data.get("Arc Length"),
+                "ArcUnit": data.get("ArcUnit"),
+                "Chord Length": data.get("Chord Length"),
+                "ChordUnit": data.get("ChordUnit"),
+                "Chord Bearing": data.get("Chord Bearing"),
+            }
+            typ_lower = str(row.get("Type") or "").strip().lower()
+            if typ_lower == "line" and row.get("Distance") not in (None, "") and not row.get("DistanceUnit"):
+                row["DistanceUnit"] = assumed_unit
+            if typ_lower == "curve":
+                for unit_key, value_key in (("RadiusUnit", "Radius"), ("ArcUnit", "Arc Length"), ("ChordUnit", "Chord Length")):
+                    if row.get(value_key) not in (None, "") and not row.get(unit_key):
+                        row[unit_key] = assumed_unit
+            key = (
+                position,
+                typ_lower,
+                row.get("Bearing"),
+                row.get("Distance"),
+                row.get("Radius"),
+                row.get("Arc Length"),
+                row.get("Chord Length"),
+                row.get("Chord Bearing"),
+            )
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            rows.append(row)
+            if is_manual:
+                manual_count += 1
+        df = pandas.DataFrame(rows, columns=columns)
+        return df, manual_count
 
     def extract_calls_from_text(self):
         if pandas is None:
@@ -1572,8 +1677,11 @@ class App(BaseTk):
         self._log("Running call extraction from deed text…")
         try:
             deed_units_default = self.settings["units_in"]
-            df_parsed = parse_deed_text_to_dataframe(deed_text, assumed_unit=deed_units_default)
-            logger(f"Parsed rows: {len(df_parsed)}")
+            df_parsed, manual_count = self._parse_deed_text_with_manual_entries(deed_text, deed_units_default)
+            if manual_count:
+                logger(f"Parsed rows: {len(df_parsed)} (including {manual_count} manual call(s))")
+            else:
+                logger(f"Parsed rows: {len(df_parsed)}")
             if getattr(self, "pb_deed", None): self.pb_deed["value"] = 65
         except Exception as e:
             logger(f"Parsing error: {e}"); messagebox.showerror("Parsing error", str(e)); return
@@ -1618,7 +1726,169 @@ class App(BaseTk):
                 continue
             tag = "call_curve" if (typ and str(typ).lower() == "curve") else "call_line"
             self.deed_text.tag_add(tag, f"1.0+{start}c", f"1.0+{end}c")
+        self._apply_manual_call_tags()
         self._log(f"Call preview: highlighted {len(spans)} potential call(s).")
+
+    def add_manual_line(self):
+        self._add_manual_call("Line")
+
+    def add_manual_curve(self):
+        self._add_manual_call("Curve")
+
+    def edit_manual_line(self):
+        self._edit_manual_call("Line")
+
+    def edit_manual_curve(self):
+        self._edit_manual_call("Curve")
+
+    def _add_manual_call(self, call_type: str):
+        if not getattr(self, "deed_text", None):
+            return
+        try:
+            start_index = self.deed_text.index("sel.first")
+            end_index = self.deed_text.index("sel.last")
+        except tk.TclError:
+            messagebox.showinfo("Select text", "Highlight the deed text for the call before adding it.")
+            return
+        if start_index == end_index:
+            messagebox.showinfo("Select text", "Highlight the deed text for the call before adding it.")
+            return
+        snippet = self.deed_text.get(start_index, end_index)
+        if not snippet.strip():
+            messagebox.showinfo("Empty selection", "The selected text was empty. Highlight the call text and try again.")
+            return
+        try:
+            call_data = self._analyze_manual_call(snippet, call_type)
+        except ValueError as exc:
+            messagebox.showerror("Call not recognized", str(exc))
+            return
+        start_chars = int(self.deed_text.count("1.0", start_index, "chars")[0])
+        end_chars = int(self.deed_text.count("1.0", end_index, "chars")[0])
+        if end_chars <= start_chars:
+            end_chars = start_chars + len(snippet)
+        self.manual_call_entries = [
+            entry for entry in self.manual_call_entries
+            if not (self._spans_overlap(entry.get("start", 0), entry.get("end", 0), start_chars, end_chars))
+        ]
+        self.manual_call_entries.append({
+            "start": start_chars,
+            "end": end_chars,
+            "type": call_type,
+            "data": call_data,
+        })
+        self.manual_call_entries.sort(key=lambda item: item.get("start", 0))
+        self._apply_manual_call_tags()
+        self._log(f"Added manual {call_type.lower()} call from highlighted text.")
+
+    def _analyze_manual_call(self, snippet: str, call_type: str) -> Dict[str, Any]:
+        assumed_unit = self.settings.get("units_in", "feet")
+        cleaned = clean_text_for_parsing(snippet)
+        if not cleaned.strip():
+            raise ValueError("The selected text did not contain any call information.")
+        entries = _parse_deed_text_entries(cleaned, assumed_unit)
+        expected_type = call_type.lower()
+        if not entries:
+            raise ValueError("No call could be parsed from the selected text.")
+        for _, _, data in entries:
+            typ = str(data.get("Type", "")).strip().lower()
+            if typ == expected_type:
+                normalized = dict(data)
+                if expected_type == "line" and normalized.get("Distance") not in (None, "") and not normalized.get("DistanceUnit"):
+                    normalized["DistanceUnit"] = assumed_unit
+                if expected_type == "curve":
+                    for unit_key, value_key in (("RadiusUnit", "Radius"), ("ArcUnit", "Arc Length"), ("ChordUnit", "Chord Length")):
+                        if normalized.get(value_key) not in (None, "") and not normalized.get(unit_key):
+                            normalized[unit_key] = assumed_unit
+                return normalized
+        available_types = {str(d.get("Type", "")).strip() for _, _, d in entries if d}
+        if available_types:
+            parsed_desc = ", ".join(sorted(t for t in available_types if t))
+            raise ValueError(f"The selected text matched {parsed_desc} detail(s) but not a {call_type.lower()} call.")
+        raise ValueError("The selected text could not be parsed as the requested call type.")
+
+    @staticmethod
+    def _spans_overlap(a_start: int, a_end: int, b_start: int, b_end: int) -> bool:
+        return max(a_start, b_start) < min(a_end, b_end)
+
+    def _apply_manual_call_tags(self):
+        if not getattr(self, "deed_text", None):
+            return
+        try:
+            self.deed_text.tag_remove("call_line", "1.0", "end")
+            self.deed_text.tag_remove("call_curve", "1.0", "end")
+        except tk.TclError:
+            pass
+        for entry in self.manual_call_entries:
+            start = entry.get("start")
+            end = entry.get("end")
+            typ = str(entry.get("type", "")).lower()
+            if start is None or end is None or start >= end:
+                continue
+            tag = "call_curve" if typ == "curve" else "call_line"
+            try:
+                self.deed_text.tag_add(tag, f"1.0+{start}c", f"1.0+{end}c")
+            except tk.TclError:
+                continue
+
+    def _edit_manual_call(self, call_type: str):
+        if not getattr(self, "deed_text", None):
+            messagebox.showinfo("Unavailable", "Extract deed text before editing manual calls.")
+            return
+        if not self.manual_call_entries:
+            messagebox.showinfo("No manual calls", "Add a manual call before attempting to edit one.")
+            return
+        try:
+            start_index = self.deed_text.index("sel.first")
+            end_index = self.deed_text.index("sel.last")
+        except tk.TclError:
+            messagebox.showinfo("Select text", "Highlight the existing manual call text before editing it.")
+            return
+        if start_index == end_index:
+            messagebox.showinfo("Select text", "Highlight the existing manual call text before editing it.")
+            return
+        snippet = self.deed_text.get(start_index, end_index)
+        if not snippet.strip():
+            messagebox.showinfo("Empty selection", "The selected text was empty. Highlight the call text and try again.")
+            return
+        try:
+            call_data = self._analyze_manual_call(snippet, call_type)
+        except ValueError as exc:
+            messagebox.showerror("Call not recognized", str(exc))
+            return
+        start_chars = int(self.deed_text.count("1.0", start_index, "chars")[0])
+        end_chars = int(self.deed_text.count("1.0", end_index, "chars")[0])
+        if end_chars <= start_chars:
+            end_chars = start_chars + len(snippet)
+        expected_type = call_type.lower()
+        overlapping: List[Dict[str, Any]] = []
+        for entry in self.manual_call_entries:
+            if str(entry.get("type", "")).lower() != expected_type:
+                continue
+            if self._spans_overlap(entry.get("start", 0), entry.get("end", 0), start_chars, end_chars):
+                overlapping.append(entry)
+        if not overlapping:
+            messagebox.showinfo("Select manual call", "Select the existing highlighted manual call to edit it.")
+            return
+        target = min(overlapping, key=lambda entry: abs(entry.get("start", 0) - start_chars))
+        remaining: List[Dict[str, Any]] = []
+        for entry in self.manual_call_entries:
+            if entry is target:
+                continue
+            if self._spans_overlap(entry.get("start", 0), entry.get("end", 0), start_chars, end_chars):
+                continue
+            remaining.append(entry)
+        target = dict(target)
+        target.update({
+            "start": start_chars,
+            "end": end_chars,
+            "type": call_type,
+            "data": call_data,
+        })
+        remaining.append(target)
+        remaining.sort(key=lambda item: item.get("start", 0))
+        self.manual_call_entries = remaining
+        self._apply_manual_call_tags()
+        self._log(f"Updated manual {call_type.lower()} call from highlighted text.")
 
     def _configure_call_highlight_tags(self):
         if not getattr(self, "deed_text", None):
