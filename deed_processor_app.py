@@ -358,23 +358,23 @@ class DeedProcessorApp(tk.Tk):
         if not HAVE_PYPROJ:
             ToolTip(transform_chk, "Install pyproj to enable automatic transformations.")
 
-        button_frame = ttk.Frame(control_frame)
-        button_frame.pack(fill="x", pady=(4, 10))
+        actions_frame = ttk.Frame(control_frame)
+        actions_frame.pack(fill="x", pady=(4, 8))
 
-        process_btn = ttk.Button(button_frame, text="Process Deed", command=self.process_deed)
+        process_btn = ttk.Button(actions_frame, text="Process Deed", command=self.process_deed)
         process_btn.pack(side="left", padx=4)
         ToolTip(process_btn, "Parse calls, compute relative/absolute parcel coordinates, and update the preview.")
 
-        export_xml_btn = ttk.Button(button_frame, text="Export LandXML", command=self.export_landxml)
-        export_xml_btn.pack(side="left", padx=4)
-        ToolTip(export_xml_btn, "Write the parcel geometry to a LandXML file using the selected origin.")
+        notebook = ttk.Notebook(control_frame)
+        notebook.pack(fill="both", expand=True)
 
-        export_dxf_btn = ttk.Button(button_frame, text="Export DXF", command=self.export_dxf)
-        export_dxf_btn.pack(side="left", padx=4)
-        ToolTip(export_dxf_btn, "Create a DXF with parcel lines/arcs. Requires ezdxf.")
+        results_tab = ttk.Frame(notebook)
+        export_tab = ttk.Frame(notebook)
+        notebook.add(results_tab, text="Results")
+        notebook.add(export_tab, text="Export")
 
-        points_frame = ttk.LabelFrame(control_frame, text="Computed Parcel Points")
-        points_frame.pack(fill="both", expand=True)
+        points_frame = ttk.LabelFrame(results_tab, text="Computed Parcel Points")
+        points_frame.pack(fill="both", expand=True, padx=8, pady=(8, 4))
 
         columns = ("index", "rel_x", "rel_y", "abs_x", "abs_y")
         self.points_tree = ttk.Treeview(points_frame, columns=columns, show="headings", height=8)
@@ -384,8 +384,8 @@ class DeedProcessorApp(tk.Tk):
             self.points_tree.column(col, width=90, anchor=anchor)
         self.points_tree.pack(fill="both", expand=True)
 
-        preview_frame = ttk.LabelFrame(control_frame, text="Parcel Preview")
-        preview_frame.pack(fill="both", expand=True, pady=(8, 0))
+        preview_frame = ttk.LabelFrame(results_tab, text="Parcel Preview")
+        preview_frame.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
         if HAVE_MPL:
             self.figure = Figure(figsize=(4, 3), dpi=100)
@@ -396,7 +396,31 @@ class DeedProcessorApp(tk.Tk):
             self.canvas = FigureCanvasTkAgg(self.figure, master=preview_frame)
             self.canvas.get_tk_widget().pack(fill="both", expand=True)
         else:
-            ttk.Label(preview_frame, text="Install matplotlib for live previews.", foreground="#777").pack(fill="both", expand=True, padx=8, pady=8)
+            ttk.Label(
+                preview_frame,
+                text="Install matplotlib for live previews.",
+                foreground="#777",
+            ).pack(fill="both", expand=True, padx=8, pady=8)
+
+        export_tab.columnconfigure(0, weight=1)
+
+        ttk.Label(
+            export_tab,
+            text="Exports honor the point of beginning and selected coordinate system.",
+            wraplength=360,
+            justify="center",
+        ).grid(row=0, column=0, padx=12, pady=(16, 8))
+
+        export_btn_frame = ttk.Frame(export_tab)
+        export_btn_frame.grid(row=1, column=0, padx=12, pady=(0, 16))
+
+        export_xml_btn = ttk.Button(export_btn_frame, text="Export LandXML", command=self.export_landxml)
+        export_xml_btn.pack(side="left", padx=6)
+        ToolTip(export_xml_btn, "Write the parcel geometry to a LandXML file using the selected origin and CRS.")
+
+        export_dxf_btn = ttk.Button(export_btn_frame, text="Export DXF", command=self.export_dxf)
+        export_dxf_btn.pack(side="left", padx=6)
+        ToolTip(export_dxf_btn, "Create a DXF with parcel lines/arcs using the configured origin and CRS. Requires ezdxf.")
 
         status_bar = ttk.Label(self, textvariable=self.status_var, anchor="w", padding=8)
         status_bar.pack(fill="x", side="bottom")
