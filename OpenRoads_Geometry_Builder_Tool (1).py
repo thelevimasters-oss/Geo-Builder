@@ -1410,8 +1410,12 @@ class App(BaseTk):
         self._bind_hint(self.btn_extract_text, "Extract deed text into an editable preview")
         self.btn_add_line = self._secondary_button(btns, "Add Line", self.add_manual_line); self.btn_add_line.pack(side="left", padx=(10,0))
         self._bind_hint(self.btn_add_line, "Select line text in the deed and add it to the call list")
+        self.btn_edit_line = self._secondary_button(btns, "Edit Line", self.edit_manual_line); self.btn_edit_line.pack(side="left", padx=(10,0))
+        self._bind_hint(self.btn_edit_line, "Adjust the highlighted text for an existing manual line call")
         self.btn_add_curve = self._secondary_button(btns, "Add Curve", self.add_manual_curve); self.btn_add_curve.pack(side="left", padx=(10,0))
         self._bind_hint(self.btn_add_curve, "Select curve text in the deed and add it to the call list")
+        self.btn_edit_curve = self._secondary_button(btns, "Edit Curve", self.edit_manual_curve); self.btn_edit_curve.pack(side="left", padx=(10,0))
+        self._bind_hint(self.btn_edit_curve, "Adjust the highlighted text for an existing manual curve call")
         btn_clear = self._secondary_button(btns, "Clear Text", self.clear_deed_text); btn_clear.pack(side="left", padx=(10,0))
         self._bind_hint(btn_clear, "Clear the editable deed text")
         tk.Label(parent, text="Editable Deed Text", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(8,4))
@@ -1792,6 +1796,12 @@ class App(BaseTk):
     def add_manual_curve(self):
         self._add_manual_call("Curve")
 
+    def edit_manual_line(self):
+        self._edit_manual_call("Line")
+
+    def edit_manual_curve(self):
+        self._edit_manual_call("Curve")
+
     def _add_manual_call(self, call_type: str):
         if not getattr(self, "deed_text", None):
             return
@@ -1834,6 +1844,81 @@ class App(BaseTk):
         })
         self.manual_call_entries.sort(key=lambda item: item.get("start", 0))
         self._log(f"Added manual {call_type.lower()} call from highlighted text.")
+
+    def _edit_manual_call(self, call_type: str):
+        if not getattr(self, "deed_text", None):
+            return
+        try:
+            start_index = self.deed_text.index("sel.first")
+            end_index = self.deed_text.index("sel.last")
+        except tk.TclError:
+            messagebox.showinfo("Select text", "Highlight the deed text for the call before editing it.")
+            return
+        if start_index == end_index:
+            messagebox.showinfo("Select text", "Highlight the deed text for the call before editing it.")
+            return
+        snippet = self.deed_text.get(start_index, end_index)
+        if not snippet.strip():
+            messagebox.showinfo("Empty selection", "The selected text was empty. Highlight the call text and try again.")
+            return
+        try:
+            call_data = self._analyze_manual_call(snippet, call_type)
+        except ValueError as exc:
+            messagebox.showerror("Call not recognized", str(exc))
+            return
+        start_chars = int(self.deed_text.count("1.0", start_index, "chars")[0])
+        end_chars = int(self.deed_text.count("1.0", end_index, "chars")[0])
+        if end_chars <= start_chars:
+            end_chars = start_chars + len(snippet)
+        tag = "call_curve" if call_type.lower() == "curve" else "call_line"
+        target_entry = None
+        for entry in self.manual_call_entries:
+            if str(entry.get("type", "")).lower() != call_type.lower():
+                continue
+            entry_start = entry.get("start", 0)
+            entry_end = entry.get("end", 0)
+            if self._spans_overlap(entry_start, entry_end, start_chars, end_chars) or (
+                entry_start <= start_chars <= entry_end
+            ) or (
+                entry_start <= end_chars <= entry_end
+            ):
+                target_entry = entry
+                break
+        if not target_entry:
+            messagebox.showinfo(
+                "No manual call",
+                f"No manual {call_type.lower()} call overlaps the selection. Add one first, then edit it.",
+            )
+            return
+        try:
+            self.deed_text.tag_remove(tag, f"1.0+{target_entry.get('start', 0)}c", f"1.0+{target_entry.get('end', 0)}c")
+        except tk.TclError:
+            pass
+        target_entry["start"] = start_chars
+        target_entry["end"] = end_chars
+        target_entry["data"] = call_data
+        try:
+            self.deed_text.tag_add(tag, start_index, end_index)
+        except tk.TclError:
+            pass
+        to_remove = []
+        for entry in self.manual_call_entries:
+            if entry is target_entry:
+                continue
+            if str(entry.get("type", "")).lower() != call_type.lower():
+                continue
+            if self._spans_overlap(entry.get("start", 0), entry.get("end", 0), start_chars, end_chars):
+                to_remove.append(entry)
+        for entry in to_remove:
+            try:
+                self.deed_text.tag_remove(tag, f"1.0+{entry.get('start', 0)}c", f"1.0+{entry.get('end', 0)}c")
+            except tk.TclError:
+                pass
+        self.manual_call_entries = [entry for entry in self.manual_call_entries if entry not in to_remove]
+        if target_entry not in self.manual_call_entries:
+            self.manual_call_entries.append(target_entry)
+        self.manual_call_entries.sort(key=lambda item: item.get("start", 0))
+        self._log(f"Updated manual {call_type.lower()} call from highlighted text.")
 
     def _analyze_manual_call(self, snippet: str, call_type: str) -> Dict[str, Any]:
         assumed_unit = self.settings.get("units_in", "feet")
