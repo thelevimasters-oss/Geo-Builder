@@ -867,6 +867,10 @@ class DeedProcessorApp(tk.Tk):
                 ET.SubElement(cgpoints, "Point", name=f"P{idx}", desc="Parcel Corner").text = f"{x:.3f} {y:.3f} 0.000"
             parcels = ET.SubElement(root, "Parcels")
             parcel = ET.SubElement(parcels, "Parcel", name="Parcel-1")
+            if pts:
+                begin_x, begin_y = pts[0]
+                parcel.set("begin.x", f"{begin_x:.3f}")
+                parcel.set("begin.y", f"{begin_y:.3f}")
             coord_geom = ET.SubElement(parcel, "CoordGeom")
             for seg in segments:
                 if seg.type == "line":
