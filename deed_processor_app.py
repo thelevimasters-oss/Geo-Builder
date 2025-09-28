@@ -94,8 +94,11 @@ SPCS_ZONES: Dict[str, int] = {
     "Alaska Zone 5 (EPSG:26935)": 26935,
     "Alaska Zone 6 (EPSG:26936)": 26936,
     "Alaska Zone 7 (EPSG:26937)": 26937,
-    "Arizona Central (EPSG:26949)": 26949,
+    "Alaska Zone 8 (EPSG:26938)": 26938,
+    "Alaska Zone 9 (EPSG:26939)": 26939,
+    "Alaska Zone 10 (EPSG:26940)": 26940,
     "Arizona East (EPSG:26948)": 26948,
+    "Arizona Central (EPSG:26949)": 26949,
     "Arizona West (EPSG:26950)": 26950,
     "Arkansas North (EPSG:26951)": 26951,
     "Arkansas South (EPSG:26952)": 26952,
@@ -105,14 +108,14 @@ SPCS_ZONES: Dict[str, int] = {
     "California Zone 4 (EPSG:26944)": 26944,
     "California Zone 5 (EPSG:26945)": 26945,
     "California Zone 6 (EPSG:26946)": 26946,
-    "Colorado Central (EPSG:26954)": 26954,
     "Colorado North (EPSG:26953)": 26953,
+    "Colorado Central (EPSG:26954)": 26954,
     "Colorado South (EPSG:26955)": 26955,
     "Connecticut (EPSG:26956)": 26956,
     "Delaware (EPSG:26957)": 26957,
     "Florida East (EPSG:26958)": 26958,
-    "Florida North (EPSG:26960)": 26960,
     "Florida West (EPSG:26959)": 26959,
+    "Florida North (EPSG:26960)": 26960,
     "Georgia East (EPSG:26966)": 26966,
     "Georgia West (EPSG:26967)": 26967,
     "Hawaii Zone 1 (EPSG:26961)": 26961,
@@ -131,8 +134,8 @@ SPCS_ZONES: Dict[str, int] = {
     "Iowa South (EPSG:26976)": 26976,
     "Kansas North (EPSG:26977)": 26977,
     "Kansas South (EPSG:26978)": 26978,
-    "Kentucky North (EPSG:2201)": 2201,
-    "Kentucky South (EPSG:2202)": 2202,
+    "Kentucky North (EPSG:26979)": 26979,
+    "Kentucky South (EPSG:26980)": 26980,
     "Louisiana North (EPSG:26981)": 26981,
     "Louisiana South (EPSG:26982)": 26982,
     "Louisiana Offshore (EPSG:32198)": 32198,
@@ -165,7 +168,7 @@ SPCS_ZONES: Dict[str, int] = {
     "New York East (EPSG:32116)": 32116,
     "New York Central (EPSG:32117)": 32117,
     "New York West (EPSG:32118)": 32118,
-    "New York Long Island (EPSG:32119)": 32119,
+    "New York Long Island (EPSG:2263)": 2263,
     "North Carolina (EPSG:32119)": 32119,
     "North Dakota North (EPSG:32121)": 32121,
     "North Dakota South (EPSG:32122)": 32122,
@@ -270,7 +273,9 @@ class DeedProcessorApp(tk.Tk):
         self.relative_points: List[Tuple[float, float]] = []
         self.offset_points: List[Tuple[float, float]] = []
 
-        self.units_var = tk.StringVar(value="feet")
+        self.units_var = tk.StringVar(
+            value=self.config_parser.get(self.CONFIG_SECTION, "units", fallback="feet")
+        )
         self.origin_easting_var = tk.StringVar(value=self.config_parser.get(self.CONFIG_SECTION, "origin_easting", fallback="0.0"))
         self.origin_northing_var = tk.StringVar(value=self.config_parser.get(self.CONFIG_SECTION, "origin_northing", fallback="0.0"))
         self.source_epsg_var = tk.StringVar(value=self.config_parser.get(self.CONFIG_SECTION, "source_epsg", fallback=""))
@@ -408,6 +413,7 @@ class DeedProcessorApp(tk.Tk):
     def _save_config(self) -> None:
         section = self.config_parser.setdefault(self.CONFIG_SECTION, {})
         section["spcs_name"] = self.selected_spcs.get()
+        section["units"] = self.units_var.get()
         section["origin_easting"] = self.origin_easting_var.get()
         section["origin_northing"] = self.origin_northing_var.get()
         section["source_epsg"] = self.source_epsg_var.get()
@@ -483,6 +489,13 @@ class DeedProcessorApp(tk.Tk):
         )
         self.segments.append(seg)
         return False
+
+    def _polygon_is_closed(self, pts: Sequence[Tuple[float, float]], tol: float = 1e-4) -> bool:
+        if len(pts) < 3:
+            return False
+        start = pts[0]
+        end = pts[-1]
+        return math.hypot(end[0] - start[0], end[1] - start[1]) <= tol
 
     def _parse_calls(self, text: str) -> List[ParsedCall]:
         calls: List[ParsedCall] = []
@@ -837,6 +850,9 @@ class DeedProcessorApp(tk.Tk):
         if not pts or not segments:
             messagebox.showerror("No geometry", "Process the deed before exporting.")
             return
+        if not self._polygon_is_closed(pts):
+            messagebox.showerror("Open parcel", "The parcel geometry must close before exporting.")
+            return
         try:
             import xml.etree.ElementTree as ET
 
@@ -844,7 +860,8 @@ class DeedProcessorApp(tk.Tk):
             ET.SubElement(root, "Application", name="Geo-Builder", version="1.0", desc="Deed Processor")
             project = ET.SubElement(root, "Project", name="Parcel", desc=self.selected_spcs.get() or "")
             units = ET.SubElement(root, "Units")
-            ET.SubElement(units, "Linear", unit=self.units_var.get(), conversionFactor="1.0")
+            unit_name = {"feet": "foot", "meters": "meter"}.get(self.units_var.get().lower(), "foot")
+            ET.SubElement(units, "Linear", unit=unit_name, conversionFactor="1.0")
             cgpoints = ET.SubElement(root, "CgPoints")
             for idx, (x, y) in enumerate(pts, start=1):
                 ET.SubElement(cgpoints, "Point", name=f"P{idx}", desc="Parcel Corner").text = f"{x:.3f} {y:.3f} 0.000"
@@ -888,13 +905,19 @@ class DeedProcessorApp(tk.Tk):
         if not pts or not segments:
             messagebox.showerror("No geometry", "Process the deed before exporting.")
             return
+        if not self._polygon_is_closed(pts):
+            messagebox.showerror("Open parcel", "The parcel geometry must close before exporting.")
+            return
         try:
             doc = ezdxf.new(setup=True)
             if self.units_var.get() == "meters":
                 doc.units = dxf_units.M
             else:
                 doc.units = dxf_units.FOOT
-            doc.header["$PROJECTNAME"] = self.selected_spcs.get() or "Parcel"
+            project_label = self.selected_spcs.get() or "Parcel"
+            doc.header["$PROJECTNAME"] = project_label
+            if self.selected_spcs_epsg:
+                doc.header["$PROJECTDESCRIPTION"] = f"EPSG:{self.selected_spcs_epsg}"
             msp = doc.modelspace()
 
             # Build LWPolyline with bulge values for arcs
@@ -909,10 +932,37 @@ class DeedProcessorApp(tk.Tk):
             lwpoly = msp.add_lwpolyline(vertices, format="xyb")
             lwpoly.closed = True
 
+            # Also add explicit line and arc entities for compatibility with some consumers
+            for seg in segments:
+                if seg.type == "line":
+                    msp.add_line(seg.start, seg.end)
+                elif seg.type == "arc" and seg.center and seg.radius:
+                    cx, cy = seg.center
+                    start_angle = math.degrees(math.atan2(seg.start[1] - cy, seg.start[0] - cx))
+                    end_angle = math.degrees(math.atan2(seg.end[1] - cy, seg.end[0] - cx))
+                    if seg.rotation == "CW":
+                        msp.add_arc(
+                            center=seg.center,
+                            radius=seg.radius,
+                            start_angle=end_angle,
+                            end_angle=start_angle,
+                            is_counter_clockwise=False,
+                        )
+                    else:
+                        msp.add_arc(
+                            center=seg.center,
+                            radius=seg.radius,
+                            start_angle=start_angle,
+                            end_angle=end_angle,
+                        )
+
             # Metadata text entity
             info = self.selected_spcs.get()
             if info:
-                msp.add_text(f"SPCS: {info}", dxfattribs={"height": 5}).set_pos((pts[0][0], pts[0][1] + 10))
+                label = info
+                if self.selected_spcs_epsg:
+                    label = f"{info} | EPSG:{self.selected_spcs_epsg}"
+                msp.add_text(label, dxfattribs={"height": 5}).set_pos((pts[0][0], pts[0][1] + 10))
 
             doc.saveas(path)
             self._set_status(f"DXF exported → {path}")
