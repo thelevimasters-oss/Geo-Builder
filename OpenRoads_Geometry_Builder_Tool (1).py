@@ -22,8 +22,10 @@ This script is built to degrade gracefully if optional packages are missing:
 - Drag & drop: tkinterdnd2
 """
 
-import sys, math, re, datetime, shlex, io, traceback, argparse
+import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser
+from dataclasses import dataclass
 from pathlib import Path
+from typing import List, Optional, Sequence, Tuple
 
 # ---------------------- THEME / BRAND ----------------------
 GPI_GREEN  = "#0F3320"
@@ -62,6 +64,169 @@ set_theme(THEME_MODE)
 UNIT_TO_FEET = {"feet":1.0,"meters":3.280839895013123,"rods":16.5,"chains":66.0}
 FEET_TO_UNIT = {"feet":1.0,"meters":0.3048}
 
+@dataclass
+class ParsedCall:
+    type: str
+    bearing: Optional[str] = None
+    distance: Optional[float] = None
+    radius: Optional[float] = None
+    arc_length: Optional[float] = None
+    chord_length: Optional[float] = None
+    chord_bearing: Optional[str] = None
+    rotation: Optional[str] = None
+
+
+@dataclass
+class ParcelSegment:
+    type: str
+    start: Tuple[float, float]
+    end: Tuple[float, float]
+    start_rel: Tuple[float, float]
+    end_rel: Tuple[float, float]
+    bearing: Optional[str] = None
+    distance: Optional[float] = None
+    radius: Optional[float] = None
+    rotation: Optional[str] = None
+    delta: Optional[float] = None
+    bulge: float = 0.0
+    center: Optional[Tuple[float, float]] = None
+    center_rel: Optional[Tuple[float, float]] = None
+
+
+@dataclass
+class ProcessResult:
+    points_rel: List[Tuple[float, float]]
+    points_abs: List[Tuple[float, float]]
+    segments: List[ParcelSegment]
+
+
+SPCS_ZONES = {
+    "Alabama East (EPSG:26929)": 26929,
+    "Alabama West (EPSG:26930)": 26930,
+    "Alaska Zone 1 (EPSG:26931)": 26931,
+    "Alaska Zone 2 (EPSG:26932)": 26932,
+    "Alaska Zone 3 (EPSG:26933)": 26933,
+    "Alaska Zone 4 (EPSG:26934)": 26934,
+    "Alaska Zone 5 (EPSG:26935)": 26935,
+    "Alaska Zone 6 (EPSG:26936)": 26936,
+    "Alaska Zone 7 (EPSG:26937)": 26937,
+    "Alaska Zone 8 (EPSG:26938)": 26938,
+    "Alaska Zone 9 (EPSG:26939)": 26939,
+    "Alaska Zone 10 (EPSG:26940)": 26940,
+    "Arizona East (EPSG:26948)": 26948,
+    "Arizona Central (EPSG:26949)": 26949,
+    "Arizona West (EPSG:26950)": 26950,
+    "Arkansas North (EPSG:26951)": 26951,
+    "Arkansas South (EPSG:26952)": 26952,
+    "California Zone 1 (EPSG:26941)": 26941,
+    "California Zone 2 (EPSG:26942)": 26942,
+    "California Zone 3 (EPSG:26943)": 26943,
+    "California Zone 4 (EPSG:26944)": 26944,
+    "California Zone 5 (EPSG:26945)": 26945,
+    "California Zone 6 (EPSG:26946)": 26946,
+    "Colorado North (EPSG:26953)": 26953,
+    "Colorado Central (EPSG:26954)": 26954,
+    "Colorado South (EPSG:26955)": 26955,
+    "Connecticut (EPSG:26956)": 26956,
+    "Delaware (EPSG:26957)": 26957,
+    "Florida East (EPSG:26958)": 26958,
+    "Florida West (EPSG:26959)": 26959,
+    "Florida North (EPSG:26960)": 26960,
+    "Georgia East (EPSG:26966)": 26966,
+    "Georgia West (EPSG:26967)": 26967,
+    "Hawaii Zone 1 (EPSG:26961)": 26961,
+    "Hawaii Zone 2 (EPSG:26962)": 26962,
+    "Hawaii Zone 3 (EPSG:26963)": 26963,
+    "Hawaii Zone 4 (EPSG:26964)": 26964,
+    "Hawaii Zone 5 (EPSG:26965)": 26965,
+    "Idaho East (EPSG:26968)": 26968,
+    "Idaho Central (EPSG:26969)": 26969,
+    "Idaho West (EPSG:26970)": 26970,
+    "Illinois East (EPSG:26971)": 26971,
+    "Illinois West (EPSG:26972)": 26972,
+    "Indiana East (EPSG:26973)": 26973,
+    "Indiana West (EPSG:26974)": 26974,
+    "Iowa North (EPSG:26975)": 26975,
+    "Iowa South (EPSG:26976)": 26976,
+    "Kansas North (EPSG:26977)": 26977,
+    "Kansas South (EPSG:26978)": 26978,
+    "Kentucky North (EPSG:26979)": 26979,
+    "Kentucky South (EPSG:26980)": 26980,
+    "Louisiana North (EPSG:26981)": 26981,
+    "Louisiana South (EPSG:26982)": 26982,
+    "Louisiana Offshore (EPSG:32198)": 32198,
+    "Maine East (EPSG:26983)": 26983,
+    "Maine West (EPSG:26984)": 26984,
+    "Maryland (EPSG:26985)": 26985,
+    "Massachusetts Mainland (EPSG:26986)": 26986,
+    "Massachusetts Island (EPSG:26987)": 26987,
+    "Michigan North (EPSG:26988)": 26988,
+    "Michigan Central (EPSG:26989)": 26989,
+    "Michigan South (EPSG:26990)": 26990,
+    "Minnesota North (EPSG:26991)": 26991,
+    "Minnesota Central (EPSG:26992)": 26992,
+    "Minnesota South (EPSG:26993)": 26993,
+    "Mississippi East (EPSG:26994)": 26994,
+    "Mississippi West (EPSG:26995)": 26995,
+    "Missouri East (EPSG:26996)": 26996,
+    "Missouri Central (EPSG:26997)": 26997,
+    "Missouri West (EPSG:26998)": 26998,
+    "Montana (EPSG:32100)": 32100,
+    "Nebraska (EPSG:32104)": 32104,
+    "Nevada East (EPSG:32108)": 32108,
+    "Nevada Central (EPSG:32109)": 32109,
+    "Nevada West (EPSG:32110)": 32110,
+    "New Hampshire (EPSG:32111)": 32111,
+    "New Jersey (EPSG:32112)": 32112,
+    "New Mexico East (EPSG:32113)": 32113,
+    "New Mexico Central (EPSG:32114)": 32114,
+    "New Mexico West (EPSG:32115)": 32115,
+    "New York East (EPSG:32116)": 32116,
+    "New York Central (EPSG:32117)": 32117,
+    "New York West (EPSG:32118)": 32118,
+    "New York Long Island (EPSG:2263)": 2263,
+    "North Carolina (EPSG:32119)": 32119,
+    "North Dakota North (EPSG:32121)": 32121,
+    "North Dakota South (EPSG:32122)": 32122,
+    "Ohio North (EPSG:32123)": 32123,
+    "Ohio South (EPSG:32124)": 32124,
+    "Oklahoma North (EPSG:32125)": 32125,
+    "Oklahoma South (EPSG:32126)": 32126,
+    "Oregon North (EPSG:32127)": 32127,
+    "Oregon South (EPSG:32128)": 32128,
+    "Pennsylvania North (EPSG:32129)": 32129,
+    "Pennsylvania South (EPSG:32130)": 32130,
+    "Puerto Rico & Virgin Is. (EPSG:32161)": 32161,
+    "Rhode Island (EPSG:32130)": 32130,
+    "South Carolina (EPSG:32133)": 32133,
+    "South Dakota North (EPSG:32134)": 32134,
+    "South Dakota South (EPSG:32135)": 32135,
+    "Tennessee (EPSG:32136)": 32136,
+    "Texas North (EPSG:32137)": 32137,
+    "Texas North Central (EPSG:32138)": 32138,
+    "Texas Central (EPSG:32139)": 32139,
+    "Texas South Central (EPSG:32140)": 32140,
+    "Texas South (EPSG:32141)": 32141,
+    "Utah North (EPSG:32142)": 32142,
+    "Utah Central (EPSG:32143)": 32143,
+    "Utah South (EPSG:32144)": 32144,
+    "Vermont (EPSG:32145)": 32145,
+    "Virginia North (EPSG:32146)": 32146,
+    "Virginia South (EPSG:32147)": 32147,
+    "Washington North (EPSG:32148)": 32148,
+    "Washington South (EPSG:32149)": 32149,
+    "West Virginia North (EPSG:32150)": 32150,
+    "West Virginia South (EPSG:32151)": 32151,
+    "Wisconsin North (EPSG:32152)": 32152,
+    "Wisconsin Central (EPSG:32153)": 32153,
+    "Wisconsin South (EPSG:32154)": 32154,
+    "Wyoming East (EPSG:32155)": 32155,
+    "Wyoming East Central (EPSG:32156)": 32156,
+    "Wyoming West Central (EPSG:32157)": 32157,
+    "Wyoming West (EPSG:32158)": 32158,
+}
+
+
 def normalize_unit_token(tok: str, default_unit="feet") -> str:
     if not tok: return default_unit
     t = tok.strip().lower().rstrip(".")
@@ -89,6 +254,28 @@ openpyxl    = _try_import("openpyxl")
 pdfplumber  = _try_import("pdfplumber")
 fitz        = _try_import("fitz")  # PyMuPDF
 pytesseract = _try_import("pytesseract")
+ezdxf       = _try_import("ezdxf")
+pyproj      = _try_import("pyproj")
+
+if ezdxf is not None:
+    try:
+        from ezdxf.lldxf import const as dxf_const
+    except Exception:
+        dxf_const = None
+else:
+    dxf_const = None
+
+try:
+    from matplotlib.figure import Figure
+    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+    HAVE_MPL = True
+except Exception:
+    Figure = None
+    FigureCanvasTkAgg = None
+    HAVE_MPL = False
+
+HAVE_EZDXF = ezdxf is not None
+HAVE_PYPROJ = pyproj is not None
 
 try:
     from PIL import Image, ImageTk
@@ -107,6 +294,33 @@ except Exception:
     DND_AVAILABLE = False
 
 from xml.etree.ElementTree import Element, SubElement, ElementTree
+
+
+class ToolTip:
+    def __init__(self, widget: tk.Widget, text: str):
+        self.widget = widget
+        self.text = text
+        self.tip_window: Optional[tk.Toplevel] = None
+        widget.bind("<Enter>", self.show)
+        widget.bind("<Leave>", self.hide)
+
+    def show(self, _event=None):
+        if self.tip_window or not self.text:
+            return
+        bbox = self.widget.bbox("insert") if hasattr(self.widget, "bbox") else None
+        x = (bbox[0] if bbox else 0) + self.widget.winfo_rootx() + 25
+        y = (bbox[3] if bbox else 0) + self.widget.winfo_rooty() + 20
+        self.tip_window = tw = tk.Toplevel(self.widget)
+        tw.wm_overrideredirect(True)
+        tw.wm_geometry(f"+{x}+{y}")
+        label = tk.Label(tw, text=self.text, justify="left", background="#ffffe0",
+                         relief="solid", borderwidth=1, font=("Segoe UI", 9))
+        label.pack(ipadx=4, ipady=2)
+
+    def hide(self, _event=None):
+        if self.tip_window:
+            self.tip_window.destroy()
+            self.tip_window = None
 
 # ---------------------- GLOBAL EXCEPTION HOOK ----------------------
 def _excepthook(exc_type, exc, tb):
@@ -808,7 +1022,7 @@ class DetailsDialog(tk.Toplevel):
 
 class SettingsDialog(tk.Toplevel):
     def __init__(self, master, current_mode, current_units_in, current_units_out, current_bearing_fmt,
-                 current_tesseract_path, on_apply):
+                 current_tesseract_path, current_spcs, on_apply):
         super().__init__(master)
         self.title("Settings"); self.configure(bg=PANEL_DARK); self.geometry("520x420")
         self.transient(master); self.grab_set(); self.on_apply = on_apply
@@ -828,6 +1042,15 @@ class SettingsDialog(tk.Toplevel):
         g2 = tk.Frame(self, bg=PANEL_DARK); g2.pack(fill="x", padx=14, pady=(2,8))
         tk.Label(g2, text="Output Units:", bg=PANEL_DARK, fg=TEXT_SOFT, width=14, anchor="w").pack(side="left")
         self.units_out_var = tk.StringVar(value=current_units_out); tk.OptionMenu(g2, self.units_out_var, "feet","meters").pack(side="left")
+        tk.Label(self, text="Coordinate System", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
+        cs_frame = tk.Frame(self, bg=PANEL_DARK); cs_frame.pack(fill="x", padx=14, pady=(2,8))
+        tk.Label(cs_frame, text="SPCS Selection:", bg=PANEL_DARK, fg=TEXT_SOFT, width=14, anchor="w").pack(side="left")
+        self._spcs_label = tk.Label(cs_frame, text=current_spcs or "None", bg=PANEL_DARK, fg=TEXT_LIGHT, anchor="w")
+        self._spcs_label.pack(side="left", padx=(0,10))
+        tk.Button(cs_frame, text="Choose…", command=self._choose_spcs,
+                  bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
+                  fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
+                  relief="flat", padx=10, pady=5, cursor="hand2").pack(side="left")
         tk.Label(self, text="Bearing Format", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
         self.bearing_var = tk.StringVar(value=current_bearing_fmt)
         b = tk.Frame(self, bg=PANEL_DARK); b.pack(anchor="w", padx=14, pady=(2,10))
@@ -859,6 +1082,10 @@ class SettingsDialog(tk.Toplevel):
         p = filedialog.askopenfilename(title="Select tesseract.exe", filetypes=[("tesseract.exe","tesseract.exe"),("All files","*.*")])
         if not p: return
         self.tesseract_var.set(p)
+    def _choose_spcs(self):
+        self.master.open_spcs_dialog()
+        value = getattr(self.master, "selected_spcs", "")
+        self._spcs_label.config(text=value or "None")
     def _apply(self):
         self.on_apply(self.mode_var.get(), self.units_in_var.get(), self.units_out_var.get(),
                       self.bearing_var.get(), self.tesseract_var.get())
@@ -960,13 +1187,42 @@ class App(BaseTk):
                 img = Image.open(icon_path).resize((32,32), Image.LANCZOS)
                 self._icon_img = ImageTk.PhotoImage(img); self.iconphoto(True, self._icon_img)
         except Exception: pass
-        self.settings = {"theme":THEME_MODE,"units_in":"feet","units_out":"feet","bearing_fmt":"dms","tesseract_path":""}
+        self.config_path = Path.home() / ".geo_builder.ini"
+        self._config_parser = configparser.ConfigParser()
+        self._user_config = {}
+        self._load_user_config()
+        self.settings = {"theme":THEME_MODE,
+                         "units_in":self._user_config.get("units_in","feet"),
+                         "units_out":self._user_config.get("units_out","feet"),
+                         "bearing_fmt":self._user_config.get("bearing_fmt","dms"),
+                         "tesseract_path":self._user_config.get("tesseract_path",""),
+                         "spcs_name":self._user_config.get("spcs_name",""),
+                         "spcs_epsg":self._coerce_int(self._user_config.get("spcs_epsg")),
+                         "origin_easting":self._user_config.get("origin_easting","0.0"),
+                         "origin_northing":self._user_config.get("origin_northing","0.0"),
+                         "source_epsg":self._user_config.get("source_epsg",""),
+                         "apply_pyproj":self._user_config.get("apply_pyproj","false").lower() == "true"}
+        self.selected_spcs = self.settings.get("spcs_name") or ""
+        self.selected_spcs_epsg = self.settings.get("spcs_epsg")
         self.deed_df = pandas.DataFrame() if pandas else None
         self.deed_pdf_path = None; self.deed_last_saved_excel = None
         self.console = None
         self._log_history = ["Ready."]
         self.grid_row_states = {}
         self._edited_rows = set()
+        self.origin_easting_var = tk.StringVar(value=self.settings.get("origin_easting","0.0"))
+        self.origin_northing_var = tk.StringVar(value=self.settings.get("origin_northing","0.0"))
+        self.source_epsg_var = tk.StringVar(value=self.settings.get("source_epsg",""))
+        self.apply_pyproj_var = tk.BooleanVar(value=self.settings.get("apply_pyproj", False))
+        self.parcel_points_rel: List[Tuple[float,float]] = []
+        self.parcel_points_abs: List[Tuple[float,float]] = []
+        self.parcel_segments: List[ParcelSegment] = []
+        self.current_origin: Tuple[float, float] = (0.0, 0.0)
+        self.points_tree = None
+        self.canvas = None
+        self.ax = None
+        self.figure = None
+        self._origin_traces_registered = False
         self.withdraw(); self.after(10, lambda: Splash(self, duration_ms=1100, on_done=self._after_splash))
     def _after_splash(self): self.deiconify(); self._build_ui()
     def _build_ui(self):
@@ -1146,6 +1402,129 @@ class App(BaseTk):
         if pdfplumber is None and fitz is None: self._log("pdfplumber / PyMuPDF not installed — text extraction may fail (pip install pdfplumber pymupdf).")
         if pytesseract is None: self._log("pytesseract not installed — OCR fallback disabled (pip install pytesseract).")
         self._refresh_grid_from_df()
+
+        geom_wrapper = tk.Frame(parent, bg=PANEL_DARK)
+        geom_wrapper.pack(fill="both", expand=True, padx=16, pady=(4,12))
+
+        control_frame = tk.Frame(geom_wrapper, bg=PANEL_DARK)
+        control_frame.pack(side="left", fill="y")
+
+        pob_lbl = tk.Label(control_frame, text="Point of Beginning (absolute)",
+                           bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold"))
+        pob_lbl.pack(anchor="w", pady=(0,4))
+        pob_frame = tk.Frame(control_frame, bg=PANEL_DARK)
+        pob_frame.pack(anchor="w", fill="x")
+        tk.Label(pob_frame, text="Easting / X", bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9)).grid(row=0, column=0, sticky="w")
+        e_entry = tk.Entry(pob_frame, textvariable=self.origin_easting_var,
+                           bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
+                           relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER, width=14)
+        e_entry.grid(row=1, column=0, sticky="we", pady=(0,4))
+        self._bind_hint(e_entry, "Absolute easting/X for the parcel point of beginning.")
+
+        tk.Label(pob_frame, text="Northing / Y", bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9)).grid(row=0, column=1, sticky="w", padx=(12,0))
+        n_entry = tk.Entry(pob_frame, textvariable=self.origin_northing_var,
+                           bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
+                           relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER, width=14)
+        n_entry.grid(row=1, column=1, sticky="we", padx=(12,0), pady=(0,4))
+        self._bind_hint(n_entry, "Absolute northing/Y for the parcel point of beginning.")
+
+        if not self._origin_traces_registered:
+            self.origin_easting_var.trace_add("write", self._on_origin_change)
+            self.origin_northing_var.trace_add("write", self._on_origin_change)
+            self._origin_traces_registered = True
+
+        pob_frame.columnconfigure(0, weight=1)
+        pob_frame.columnconfigure(1, weight=1)
+
+        spcs_frame = tk.Frame(control_frame, bg=PANEL_DARK)
+        spcs_frame.pack(anchor="w", fill="x", pady=(8,4))
+        tk.Label(spcs_frame, text="State Plane Coordinate System", bg=PANEL_DARK,
+                 fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).grid(row=0, column=0, columnspan=2, sticky="w")
+        tk.Label(spcs_frame, text="Selected:", bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9)).grid(row=1, column=0, sticky="w")
+        self.spcs_value_lbl = tk.Label(spcs_frame, text=self.selected_spcs or "None", bg=PANEL_DARK,
+                                       fg=TEXT_LIGHT, font=("Segoe UI",9), wraplength=220, justify="left")
+        self.spcs_value_lbl.grid(row=1, column=1, sticky="w", padx=(6,0))
+        choose_btn = self._secondary_button(spcs_frame, "Choose…", self.open_spcs_dialog)
+        choose_btn.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4,0))
+        self._bind_hint(choose_btn, "Pick a State Plane zone for DXF metadata.")
+
+        tk.Label(spcs_frame, text="Source EPSG (optional)", bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9)).grid(row=3, column=0, sticky="w", pady=(8,0))
+        epsg_entry = tk.Entry(spcs_frame, textvariable=self.source_epsg_var, width=16,
+                              bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
+                              relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER)
+        epsg_entry.grid(row=3, column=1, sticky="w", padx=(6,0), pady=(8,0))
+        self._bind_hint(epsg_entry, "EPSG of current working coordinates for optional pyproj transform.")
+
+        transform_chk = tk.Checkbutton(spcs_frame, text="Transform with pyproj when exporting",
+                                       variable=self.apply_pyproj_var,
+                                       bg=PANEL_DARK, fg=TEXT_LIGHT, selectcolor=PANEL_DARK,
+                                       activebackground=PANEL_DARK, activeforeground=TEXT_LIGHT,
+                                       state="normal" if HAVE_PYPROJ else "disabled")
+        transform_chk.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6,0))
+        if not HAVE_PYPROJ:
+            self._bind_hint(transform_chk, "Install pyproj to enable coordinate transformations.")
+
+        tk.Label(control_frame, text="Export Files", bg=PANEL_DARK,
+                 fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", pady=(12,4))
+        btn_frame = tk.Frame(control_frame, bg=PANEL_DARK)
+        btn_frame.pack(fill="x", pady=(10,6))
+        process_btn = self._cta_button(btn_frame, "Process Geometry")
+        process_btn.pack(side="left")
+        process_btn.configure(command=self.process_deed_geometry)
+        self._bind_hint(process_btn, "Compute parcel coordinates from the parsed calls.")
+
+        self.export_landxml_btn = self._secondary_button(btn_frame, "Export LandXML", self.export_landxml)
+        self.export_landxml_btn.pack(side="left", padx=(10,0))
+        self._bind_hint(self.export_landxml_btn, "Write a LandXML parcel using the offset points.")
+
+        self.export_dxf_btn = self._secondary_button(btn_frame, "Export DXF", self.export_dxf)
+        self.export_dxf_btn.pack(side="left", padx=(10,0))
+        hint = ("Create a DXF parcel. Install ezdxf for this export."
+                if not HAVE_EZDXF else "Create a DXF parcel file using the selected State Plane zone.")
+        self._bind_hint(self.export_dxf_btn, hint)
+        if not HAVE_EZDXF:
+            self.export_dxf_btn.configure(state="disabled")
+            tk.Label(control_frame, text="Install ezdxf to enable DXF export.",
+                     bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",9)).pack(anchor="w", pady=(0,6))
+
+        self._update_export_buttons()
+
+        tk.Label(control_frame, text="Computed Parcel Points", bg=PANEL_DARK,
+                 fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", pady=(6,2))
+        points_container = tk.Frame(control_frame, bg=PANEL_DARK)
+        points_container.pack(fill="both", expand=True)
+        columns = ("#", "ΔE", "ΔN", "E", "N")
+        self.points_tree = ttk.Treeview(points_container, columns=columns, show="headings", height=10)
+        headings = ["#", "ΔE", "ΔN", "Easting", "Northing"]
+        for col, title in zip(columns, headings):
+            anchor = "center" if col == "#" else "e"
+            self.points_tree.heading(col, text=title)
+            self.points_tree.column(col, width=90, anchor=anchor, stretch=True)
+        self.points_tree.pack(side="left", fill="both", expand=True)
+        pts_scroll = tk.Scrollbar(points_container, orient="vertical", command=self.points_tree.yview)
+        self.points_tree.configure(yscrollcommand=pts_scroll.set)
+        pts_scroll.pack(side="right", fill="y")
+
+        preview_frame = tk.Frame(geom_wrapper, bg=PANEL_DARK)
+        preview_frame.pack(side="left", fill="both", expand=True, padx=(18,0))
+        tk.Label(preview_frame, text="Parcel Preview", bg=PANEL_DARK,
+                 fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", pady=(0,4))
+        if HAVE_MPL:
+            self.figure = Figure(figsize=(4.5,3.2), dpi=100)
+            self.ax = self.figure.add_subplot(111)
+            self.ax.set_title("Plan View")
+            self.ax.set_aspect("equal", adjustable="datalim")
+            self.ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.4)
+            self.canvas = FigureCanvasTkAgg(self.figure, master=preview_frame)
+            self.canvas.get_tk_widget().pack(fill="both", expand=True)
+        else:
+            msg = "Install matplotlib for live parcel previews."
+            tk.Label(preview_frame, text=msg, bg=PANEL_DARK, fg=TEXT_SOFT,
+                     font=("Segoe UI",9), justify="left", wraplength=300).pack(fill="both", expand=True)
     # Deed actions & helpers
     def extract_deed_text(self):
         p = Path(self.pdf_var.get() or "")
@@ -1403,6 +1782,439 @@ class App(BaseTk):
             base_val = _strip_uncertainty_markup(current_val)
             if base_val != current_val:
                 self.grid.set(row_id, col_name, base_val)
+
+    # ---------------------- Parcel geometry ----------------------
+    def process_deed_geometry(self):
+        if self.deed_df is None or self.deed_df.empty:
+            messagebox.showerror("No courses", "Run call extraction before processing geometry.")
+            return
+        origin = self._get_current_origin()
+        if origin is None:
+            return
+        origin_x, origin_y = origin
+        try:
+            calls = self._build_calls_from_df(self.deed_df)
+        except ValueError as exc:
+            messagebox.showerror("Processing error", str(exc))
+            return
+        if not calls:
+            messagebox.showwarning("No geometry", "No line or curve calls found to process.")
+            return
+        try:
+            result = self._compute_geometry(calls, (origin_x, origin_y))
+        except ValueError as exc:
+            messagebox.showerror("Geometry error", str(exc))
+            return
+        self.parcel_points_rel = result.points_rel
+        self.parcel_points_abs = result.points_abs
+        self.parcel_segments = result.segments
+        closed = self._ensure_closed()
+        self._update_points_tree()
+        self._update_preview()
+        self._update_export_buttons()
+        self._save_user_config()
+        msg = "Parcel geometry processed."
+        if not closed:
+            msg += " Parcel was forced closed with a final segment."
+        self._log(msg)
+
+    def _build_calls_from_df(self, df):
+        calls = []
+        for _, row in df.iterrows():
+            typ = str(row.get("Type", "")).strip().lower()
+            if typ not in ("line", "curve", "arc"):
+                continue
+            bearing = row.get("Bearing")
+            distance = self._to_float(row.get("Distance (ft)") or row.get("Distance"))
+            radius = self._to_float(row.get("Radius (ft)") or row.get("Radius"))
+            arc_length = self._to_float(row.get("Arc Length (ft)") or row.get("Arc Length"))
+            chord_length = self._to_float(row.get("Chord Length (ft)") or row.get("Chord Length"))
+            chord_bearing = row.get("Chord Bearing")
+            rotation = row.get("Rotation") or row.get("Curve Rotation") or row.get("Turn")
+            calls.append(ParsedCall(
+                type="curve" if typ == "arc" else typ,
+                bearing=str(bearing).strip() if bearing not in (None, "") else None,
+                distance=distance,
+                radius=radius,
+                arc_length=arc_length,
+                chord_length=chord_length,
+                chord_bearing=str(chord_bearing).strip() if chord_bearing not in (None, "") else None,
+                rotation=str(rotation).strip() if rotation not in (None, "") else None,
+            ))
+        return calls
+
+    def _compute_geometry(self, calls: Sequence[ParsedCall], origin: Tuple[float, float]) -> ProcessResult:
+        points_rel: List[Tuple[float, float]] = [(0.0, 0.0)]
+        points_abs: List[Tuple[float, float]] = [origin]
+        segments: List[ParcelSegment] = []
+        current_dir = None
+        bearing_fmt = self.settings.get("bearing_fmt", "dms")
+
+        for call in calls:
+            start_rel = points_rel[-1]
+            start_abs = points_abs[-1]
+            if call.type == "line":
+                if call.distance is None:
+                    raise ValueError("Line call missing distance.")
+                if call.bearing:
+                    current_dir = parse_bearing_to_east_ccw_radians(call.bearing, bearing_fmt)
+                elif current_dir is None:
+                    current_dir = 0.0
+                dx = math.cos(current_dir) * call.distance
+                dy = math.sin(current_dir) * call.distance
+                end_rel = (start_rel[0] + dx, start_rel[1] + dy)
+                end_abs = (start_abs[0] + dx, start_abs[1] + dy)
+                points_rel.append(end_rel)
+                points_abs.append(end_abs)
+                segments.append(ParcelSegment(
+                    type="line",
+                    start=start_abs,
+                    end=end_abs,
+                    start_rel=start_rel,
+                    end_rel=end_rel,
+                    bearing=call.bearing,
+                    distance=call.distance,
+                ))
+            elif call.type in ("curve", "arc"):
+                if call.radius is None and call.chord_length is None:
+                    raise ValueError("Curve call requires a radius or chord length.")
+                rotation = (call.rotation or "CCW").upper()
+                if rotation in {"LEFT", "CCW"}:
+                    rotation = "CCW"
+                elif rotation in {"RIGHT", "CW"}:
+                    rotation = "CW"
+                else:
+                    rotation = "CCW"
+                radius = call.radius
+                chord = call.chord_length
+                if chord is None and call.arc_length and radius:
+                    chord = 2 * radius * math.sin((call.arc_length / radius) / 2.0)
+                if radius is None and chord is not None:
+                    radius = chord / (2 * math.sin(math.radians(45))) if chord else None
+                if radius is None or chord is None:
+                    raise ValueError("Unable to determine radius/chord for curve call.")
+                if chord / 2.0 > radius:
+                    raise ValueError("Curve chord exceeds diameter for given radius.")
+                if call.arc_length and radius:
+                    delta = call.arc_length / radius
+                else:
+                    delta = 2 * math.asin(max(min(chord / (2 * radius), 1.0), -1.0))
+                if call.chord_bearing:
+                    chord_angle = parse_bearing_to_east_ccw_radians(call.chord_bearing, bearing_fmt)
+                    current_dir = chord_angle + (delta / 2.0 if rotation == "CCW" else -delta / 2.0)
+                elif current_dir is not None:
+                    turn = delta if rotation == "CCW" else -delta
+                    chord_angle = current_dir + turn / 2.0
+                    current_dir = current_dir + turn
+                else:
+                    chord_angle = 0.0
+                    current_dir = chord_angle + (delta / 2.0 if rotation == "CCW" else -delta / 2.0)
+                dx = math.cos(chord_angle) * chord
+                dy = math.sin(chord_angle) * chord
+                end_rel = (start_rel[0] + dx, start_rel[1] + dy)
+                end_abs = (start_abs[0] + dx, start_abs[1] + dy)
+                center = self._compute_arc_center(start_abs, end_abs, radius, rotation)
+                bulge = math.tan(delta / 4.0)
+                if rotation == "CW":
+                    bulge *= -1
+                center_rel = None
+                if center is not None:
+                    center_rel = (center[0] - origin[0], center[1] - origin[1])
+                segments.append(ParcelSegment(
+                    type="arc",
+                    start=start_abs,
+                    end=end_abs,
+                    start_rel=start_rel,
+                    end_rel=end_rel,
+                    radius=radius,
+                    rotation=rotation,
+                    delta=math.degrees(delta),
+                    bulge=bulge,
+                    center=center,
+                    center_rel=center_rel,
+                ))
+                points_rel.append(end_rel)
+                points_abs.append(end_abs)
+            else:
+                continue
+        return ProcessResult(points_rel, points_abs, segments)
+
+    def _compute_arc_center(self, start, end, radius, rotation):
+        dx = end[0] - start[0]
+        dy = end[1] - start[1]
+        chord = math.hypot(dx, dy)
+        if chord == 0 or radius is None or radius <= 0:
+            return None
+        midpoint = ((start[0] + end[0]) / 2.0, (start[1] + end[1]) / 2.0)
+        try:
+            height = math.sqrt(max(radius ** 2 - (chord / 2.0) ** 2, 0.0))
+        except ValueError:
+            return None
+        ux, uy = dx / chord, dy / chord
+        left_normal = (-uy, ux)
+        sign = 1.0 if rotation == "CCW" else -1.0
+        cx = midpoint[0] + sign * left_normal[0] * height
+        cy = midpoint[1] + sign * left_normal[1] * height
+        return (cx, cy)
+
+    def _ensure_closed(self):
+        if not self.parcel_points_abs:
+            return True
+        start = self.parcel_points_abs[0]
+        end = self.parcel_points_abs[-1]
+        if math.hypot(end[0] - start[0], end[1] - start[1]) <= 1e-4:
+            return True
+        self.parcel_points_rel.append(self.parcel_points_rel[0])
+        self.parcel_points_abs.append(start)
+        seg = ParcelSegment(
+            type="line",
+            start=self.parcel_points_abs[-2],
+            end=start,
+            start_rel=self.parcel_points_rel[-2],
+            end_rel=self.parcel_points_rel[0],
+            distance=math.hypot(start[0] - self.parcel_points_abs[-2][0], start[1] - self.parcel_points_abs[-2][1]),
+        )
+        self.parcel_segments.append(seg)
+        return False
+
+    def _polygon_is_closed(self, pts, tol=1e-4):
+        if len(pts) < 3:
+            return False
+        start = pts[0]
+        end = pts[-1]
+        return math.hypot(end[0] - start[0], end[1] - start[1]) <= tol
+
+    def _update_points_tree(self):
+        if not self.points_tree:
+            return
+        self.points_tree.delete(*self.points_tree.get_children())
+        for idx, (rel, abs_pt) in enumerate(zip(self.parcel_points_rel, self.parcel_points_abs), start=1):
+            vals = (
+                idx,
+                f"{rel[0]:.3f}",
+                f"{rel[1]:.3f}",
+                f"{abs_pt[0]:.3f}",
+                f"{abs_pt[1]:.3f}",
+            )
+            self.points_tree.insert("", "end", values=vals)
+
+    def _update_preview(self):
+        if not HAVE_MPL or not self.canvas or not self.ax:
+            return
+        self.ax.clear()
+        self.ax.set_title("Plan View")
+        self.ax.set_aspect("equal", adjustable="datalim")
+        self.ax.grid(True, linestyle="--", linewidth=0.5, alpha=0.4)
+        if len(self.parcel_points_abs) >= 2:
+            xs = [p[0] for p in self.parcel_points_abs]
+            ys = [p[1] for p in self.parcel_points_abs]
+            self.ax.plot(xs, ys, marker="o")
+        self.canvas.draw_idle()
+
+    def _get_current_origin(self, raise_error=True):
+        try:
+            ox = float(self.origin_easting_var.get() or 0.0)
+            oy = float(self.origin_northing_var.get() or 0.0)
+        except ValueError:
+            if raise_error:
+                messagebox.showerror("Invalid origin", "Origin coordinates must be numeric values.")
+            return None
+        self.current_origin = (ox, oy)
+        return self.current_origin
+
+    def _update_export_buttons(self):
+        state = "normal" if self.parcel_points_rel else "disabled"
+        if getattr(self, "export_landxml_btn", None):
+            self.export_landxml_btn.configure(state=state)
+        if getattr(self, "export_dxf_btn", None):
+            dxf_state = state if HAVE_EZDXF and self.selected_spcs else "disabled"
+            self.export_dxf_btn.configure(state=dxf_state)
+
+    def _on_origin_change(self, *_):
+        origin = self._get_current_origin(raise_error=False)
+        if origin is None or not self.parcel_points_rel:
+            return
+        ox, oy = origin
+        self.parcel_points_abs = [(rel[0] + ox, rel[1] + oy) for rel in self.parcel_points_rel]
+        for seg in self.parcel_segments:
+            seg.start = (seg.start_rel[0] + ox, seg.start_rel[1] + oy)
+            seg.end = (seg.end_rel[0] + ox, seg.end_rel[1] + oy)
+            if seg.center_rel is not None:
+                seg.center = (seg.center_rel[0] + ox, seg.center_rel[1] + oy)
+        self._update_points_tree()
+        self._update_preview()
+        self._save_user_config()
+
+    def _prepare_export_geometry(self):
+        if not self.parcel_points_rel:
+            return None, None
+        origin = self._get_current_origin()
+        if origin is None:
+            return None, None
+        ox, oy = origin
+        pts_abs = [(rel[0] + ox, rel[1] + oy) for rel in self.parcel_points_rel]
+        pts = list(pts_abs)
+        transformer = None
+        if self.apply_pyproj_var.get() and HAVE_PYPROJ and self.selected_spcs_epsg and self.source_epsg_var.get():
+            try:
+                src_epsg = int(self.source_epsg_var.get())
+                transformer = pyproj.Transformer.from_crs(f"EPSG:{src_epsg}", f"EPSG:{self.selected_spcs_epsg}", always_xy=True)
+                pts = [transformer.transform(x, y) for x, y in pts]
+            except Exception as exc:
+                transformer = None
+                messagebox.showwarning("Transformation failed", str(exc), parent=self)
+        export_segments = []
+        for idx, seg in enumerate(self.parcel_segments):
+            if idx + 1 >= len(pts):
+                break
+            start = pts[idx]
+            end = pts[idx + 1]
+            base_center = None
+            if seg.center_rel is not None:
+                base_center = (seg.center_rel[0] + ox, seg.center_rel[1] + oy)
+            elif seg.center is not None:
+                base_center = seg.center
+            center = base_center
+            if transformer and base_center:
+                try:
+                    center = transformer.transform(base_center[0], base_center[1])
+                except Exception:
+                    center = base_center
+            export_segments.append(ParcelSegment(
+                type=seg.type,
+                start=start,
+                end=end,
+                start_rel=seg.start_rel,
+                end_rel=seg.end_rel,
+                bearing=seg.bearing,
+                distance=seg.distance,
+                radius=seg.radius,
+                rotation=seg.rotation,
+                delta=seg.delta,
+                bulge=seg.bulge,
+                center=center,
+                center_rel=seg.center_rel,
+            ))
+        return pts, export_segments
+
+    def export_landxml(self):
+        if not self.parcel_points_rel:
+            messagebox.showerror("No geometry", "Process the deed before exporting.")
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Save LandXML", defaultextension=".xml",
+                                            filetypes=[("LandXML", "*.xml"), ("All Files", "*.*")],
+                                            initialfile="parcel.xml")
+        if not path:
+            return
+        pts, segments = self._prepare_export_geometry()
+        if pts is None or segments is None:
+            return
+        if not pts or not segments:
+            messagebox.showerror("No geometry", "Process the deed before exporting.")
+            return
+        if not self._polygon_is_closed(pts):
+            messagebox.showerror("Open parcel", "Parcel must close before exporting.")
+            return
+        try:
+            root = Element("LandXML", version="1.2", xmlns="http://www.landxml.org/schema/LandXML-1.2")
+            SubElement(root, "Application", name="Geo-Builder", version="1.0", desc="Deed Processor")
+            SubElement(root, "Project", name="Parcel", desc=self.selected_spcs or "")
+            units_elem = SubElement(root, "Units")
+            unit_name = "meter" if self.settings.get("units_in", "feet").lower() == "meters" else "foot"
+            SubElement(units_elem, "Linear", unit=unit_name, conversionFactor="1.0")
+            cgpoints = SubElement(root, "CgPoints")
+            for idx, (x, y) in enumerate(pts, start=1):
+                SubElement(cgpoints, "Point", name=f"P{idx}", desc="Parcel Corner").text = f"{x:.3f} {y:.3f} 0.000"
+            parcels = SubElement(root, "Parcels")
+            parcel = SubElement(parcels, "Parcel", name="Parcel-1")
+            coord_geom = SubElement(parcel, "CoordGeom")
+            for seg in segments:
+                if seg.type == "line":
+                    line = SubElement(coord_geom, "Line")
+                    SubElement(line, "Start").text = f"{seg.start[0]:.3f} {seg.start[1]:.3f}"
+                    SubElement(line, "End").text = f"{seg.end[0]:.3f} {seg.end[1]:.3f}"
+                elif seg.type == "arc":
+                    rot = "cw" if (seg.rotation or "CW").upper() == "CW" else "ccw"
+                    curve = SubElement(coord_geom, "Curve", rot=rot,
+                                       radius=f"{seg.radius:.3f}" if seg.radius else "")
+                    SubElement(curve, "Start").text = f"{seg.start[0]:.3f} {seg.start[1]:.3f}"
+                    if seg.center:
+                        SubElement(curve, "Center").text = f"{seg.center[0]:.3f} {seg.center[1]:.3f}"
+                    SubElement(curve, "End").text = f"{seg.end[0]:.3f} {seg.end[1]:.3f}"
+            tree = ElementTree(root)
+            tree.write(path, encoding="utf-8", xml_declaration=True)
+            self._log(f"LandXML exported → {path}")
+        except Exception as exc:
+            messagebox.showerror("Export failed", str(exc))
+
+    def export_dxf(self):
+        if not HAVE_EZDXF:
+            messagebox.showerror("Missing ezdxf", "Install ezdxf to export DXF files.")
+            return
+        if not self.parcel_points_rel:
+            messagebox.showerror("No geometry", "Process the deed before exporting.")
+            return
+        if not self.selected_spcs:
+            messagebox.showerror("No coordinate system", "Select a State Plane coordinate system before exporting a DXF.")
+            return
+        path = filedialog.asksaveasfilename(parent=self, title="Save DXF", defaultextension=".dxf",
+                                            filetypes=[("DXF", "*.dxf"), ("All Files", "*.*")],
+                                            initialfile="parcel.dxf")
+        if not path:
+            return
+        pts, segments = self._prepare_export_geometry()
+        if pts is None or segments is None:
+            return
+        if not pts or not segments:
+            messagebox.showerror("No geometry", "Process the deed before exporting.")
+            return
+        if not self._polygon_is_closed(pts):
+            messagebox.showerror("Open parcel", "Parcel must close before exporting.")
+            return
+        try:
+            doc = ezdxf.new(setup=True)
+            units_in = self.settings.get("units_in", "feet").lower()
+            if dxf_const is not None and hasattr(doc, "header"):
+                doc.header["$INSUNITS"] = dxf_const.INSUNITS_METERS if units_in == "meters" else dxf_const.INSUNITS_FEET
+            elif hasattr(doc, "units") and hasattr(ezdxf, "units"):
+                doc.units = ezdxf.units.M if units_in == "meters" else ezdxf.units.FOOT
+            if hasattr(doc.header, "__setitem__"):
+                doc.header["$PROJECTNAME"] = self.selected_spcs or "Parcel"
+                if self.selected_spcs_epsg:
+                    doc.header["$PROJECTDESCRIPTION"] = f"EPSG:{self.selected_spcs_epsg}"
+            msp = doc.modelspace()
+            vertices = []
+            vertices.append((pts[0][0], pts[0][1], 0.0))
+            for idx, seg in enumerate(segments):
+                end = pts[idx + 1]
+                bulge = seg.bulge if seg.type == "arc" else 0.0
+                vertices.append((end[0], end[1], bulge))
+            lwpoly = msp.add_lwpolyline(vertices, format="xyb")
+            lwpoly.closed = True
+            for seg in segments:
+                if seg.type == "line":
+                    msp.add_line(seg.start, seg.end)
+                elif seg.type == "arc" and seg.center and seg.radius:
+                    cx, cy = seg.center
+                    start_angle = math.degrees(math.atan2(seg.start[1] - cy, seg.start[0] - cx))
+                    end_angle = math.degrees(math.atan2(seg.end[1] - cy, seg.end[0] - cx))
+                    if seg.rotation == "CW":
+                        msp.add_arc(center=seg.center, radius=seg.radius,
+                                    start_angle=end_angle, end_angle=start_angle,
+                                    is_counter_clockwise=False)
+                    else:
+                        msp.add_arc(center=seg.center, radius=seg.radius,
+                                    start_angle=start_angle, end_angle=end_angle)
+            if self.selected_spcs:
+                label = self.selected_spcs
+                if self.selected_spcs_epsg:
+                    label += f" | EPSG:{self.selected_spcs_epsg}"
+                msp.add_text(label, dxfattribs={"height": 5}).set_pos((pts[0][0], pts[0][1] + 10))
+            doc.saveas(path)
+            self._log(f"DXF exported → {path}")
+        except Exception as exc:
+            messagebox.showerror("DXF export failed", str(exc))
+
     def save_deed_excel(self):
         if self.deed_df is None or self.deed_df.empty:
             messagebox.showerror("Nothing to save","No parsed courses to save. Extract first."); return
@@ -1470,7 +2282,8 @@ class App(BaseTk):
     def open_settings(self):
         SettingsDialog(self, current_mode=self.settings["theme"], current_units_in=self.settings["units_in"],
                        current_units_out=self.settings["units_out"], current_bearing_fmt=self.settings["bearing_fmt"],
-                       current_tesseract_path=self.settings["tesseract_path"], on_apply=self.apply_settings)
+                       current_tesseract_path=self.settings["tesseract_path"], current_spcs=self.selected_spcs,
+                       on_apply=self.apply_settings)
     def apply_settings(self, mode, units_in, units_out, bearing_fmt, tess_path):
         previous = dict(self.settings)
         self.settings.update({"theme":mode,"units_in":units_in,"units_out":units_out,"bearing_fmt":bearing_fmt,"tesseract_path":tess_path or ""})
@@ -1497,6 +2310,7 @@ class App(BaseTk):
             if selected_tab is not None:
                 try: self.notebook.select(selected_tab)
                 except Exception: pass
+        self._save_user_config()
         self._log(f"Settings applied → Theme={mode}, Input Units={units_in}, Output Units={units_out}, Bearing Format={bearing_fmt}")
     def convert(self):
         try:
@@ -1570,6 +2384,110 @@ class App(BaseTk):
             # drop the stale reference; the next rebuild will create a fresh console
             # and ``_render_log_history`` will repopulate it from ``_log_history``.
             self.console = None
+
+    def _load_user_config(self):
+        if self.config_path.exists():
+            try:
+                self._config_parser.read(self.config_path)
+            except Exception:
+                self._config_parser = configparser.ConfigParser()
+        section = self._config_parser.setdefault("GeoBuilder", {})
+        self._user_config = dict(section)
+
+    def _save_user_config(self):
+        section = self._config_parser.setdefault("GeoBuilder", {})
+        section.update({
+            "units_in": self.settings.get("units_in", "feet"),
+            "units_out": self.settings.get("units_out", "feet"),
+            "bearing_fmt": self.settings.get("bearing_fmt", "dms"),
+            "tesseract_path": self.settings.get("tesseract_path", ""),
+            "spcs_name": self.selected_spcs or "",
+            "spcs_epsg": str(self.selected_spcs_epsg or ""),
+            "origin_easting": self.origin_easting_var.get(),
+            "origin_northing": self.origin_northing_var.get(),
+            "source_epsg": self.source_epsg_var.get(),
+            "apply_pyproj": str(bool(self.apply_pyproj_var.get())).lower(),
+        })
+        try:
+            with self.config_path.open("w", encoding="utf-8") as fh:
+                self._config_parser.write(fh)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _coerce_int(value):
+        if value in (None, ""):
+            return None
+        try:
+            return int(str(value))
+        except ValueError:
+            return None
+
+    @staticmethod
+    def _to_float(value):
+        if value in (None, ""):
+            return None
+        try:
+            return float(str(value).replace(",", ""))
+        except ValueError:
+            return None
+
+    def open_spcs_dialog(self):
+        dialog = tk.Toplevel(self)
+        dialog.title("Select State Plane Coordinate System")
+        dialog.transient(self)
+        dialog.grab_set()
+        tk.Label(dialog, text="Search:").grid(row=0, column=0, padx=6, pady=6, sticky="w")
+        search_var = tk.StringVar()
+        search_entry = tk.Entry(dialog, textvariable=search_var, width=40)
+        search_entry.grid(row=0, column=1, padx=6, pady=6, sticky="we")
+        options = sorted(SPCS_ZONES.keys())
+        listbox = tk.Listbox(dialog, height=12, exportselection=False)
+        listbox.grid(row=1, column=0, columnspan=2, padx=6, pady=6, sticky="nsew")
+        for opt in options:
+            listbox.insert(tk.END, opt)
+        if self.selected_spcs in options:
+            idx = options.index(self.selected_spcs)
+            listbox.selection_set(idx)
+            listbox.see(idx)
+        dialog.columnconfigure(1, weight=1)
+        dialog.rowconfigure(1, weight=1)
+
+        def apply_filter(*_):
+            term = search_var.get().lower()
+            listbox.delete(0, tk.END)
+            matches = [opt for opt in options if term in opt.lower()]
+            for opt in (matches or options):
+                listbox.insert(tk.END, opt)
+            if matches:
+                listbox.selection_clear(0, tk.END)
+                listbox.selection_set(0)
+
+        search_var.trace_add("write", apply_filter)
+
+        def choose():
+            sel = listbox.curselection()
+            if not sel:
+                messagebox.showwarning("No selection", "Choose a coordinate system.", parent=dialog)
+                return
+            value = listbox.get(sel[0])
+            self.selected_spcs = value
+            self.selected_spcs_epsg = SPCS_ZONES.get(value)
+            self.settings["spcs_name"] = value
+            self.settings["spcs_epsg"] = self.selected_spcs_epsg
+            if getattr(self, "spcs_value_lbl", None):
+                self.spcs_value_lbl.config(text=value)
+            self._save_user_config()
+            self._log(f"Selected SPCS: {value}")
+            self._update_export_buttons()
+            dialog.destroy()
+
+        btn_frame = tk.Frame(dialog)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=6)
+        tk.Button(btn_frame, text="OK", command=choose).pack(side="left", padx=4)
+        tk.Button(btn_frame, text="Cancel", command=dialog.destroy).pack(side="left", padx=4)
+        search_entry.focus_set()
+        dialog.wait_window(dialog)
 
 def _run_cli(argv):
     parser = argparse.ArgumentParser(
