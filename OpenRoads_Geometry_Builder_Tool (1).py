@@ -771,11 +771,29 @@ def _to_float(s: str):
     try: return float(str(s).replace(",",""))
     except: return None
 
+def _normalize_cardinal(token: Optional[str]) -> Optional[str]:
+    if token is None:
+        return None
+    cleaned = str(token).strip().upper()
+    if not cleaned:
+        return None
+    mapping = {
+        "N": "N",
+        "NORTH": "N",
+        "S": "S",
+        "SOUTH": "S",
+        "E": "E",
+        "EAST": "E",
+        "W": "W",
+        "WEST": "W",
+    }
+    return mapping.get(cleaned, cleaned[:1])
+
 # ---------- FIXED, SAFE, VERBOSE REGEXES ----------
 _LINE_QD_PATTERN = re.compile(r"""
     \b
     (?:THENCE\s+)?(?:ALONG\s+)?(?:THE\s+)?        # optional prose
-    ([NS])\s*                                      # N or S
+    (N(?:ORTH)?|S(?:OUTH)?)\s*                      # N/S or NORTH/SOUTH
     (
         [0-9]{1,3}
         (?:
@@ -784,7 +802,7 @@ _LINE_QD_PATTERN = re.compile(r"""
             \d+(?:\.\d+)?                                 # or decimal
         )
     )
-    \s*([EW])                                      # E or W
+    \s*(E(?:AST)?|W(?:EST)?)                       # E/W or EAST/WEST
     (?:[^0-9]{0,80})?                               # brief prose before distance
     (?:\b(?:FOR\s+)?(?:A\s+)?(?:DIST(?:ANCE)?|LENGTH)\s+(?:OF\s+)?)?  # optional distance prose
     ([0-9,]+(?:\.\d+)?)                             # distance number
@@ -807,7 +825,7 @@ _CURVE_PATTERN = re.compile(r"""
     \bRADIUS\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?|RDS?)\b
     (?: .*? \bARC\s+LENGTH\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?|RDS?)\b )?
     (?: .*? \bCHORD\s+(?:DIST(?:ANCE)?|LENGTH)\s+(?:OF\s+)?([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?|RDS?)\b )?
-    (?: .*? \bCHORD\s+BEARS?\s+(N|S)\s*([0-9]{1,3}(?:[°º]\s*\d{1,2}(?:['’]\s*\d{1,2}(?:"|”)? )?|\d+(?:\.\d+)?))\s*(E|W) )?
+    (?: .*? \bCHORD\s+BEARS?\s+(N(?:ORTH)?|S(?:OUTH)?)\s*([0-9]{1,3}(?:[°º]\s*\d{1,2}(?:['’]\s*\d{1,2}(?:"|”)? )?|\d+(?:\.\d+)?))\s*(E(?:AST)?|W(?:EST)?) )?
     """, re.IGNORECASE | re.DOTALL | re.VERBOSE)
 
 
@@ -823,7 +841,16 @@ def _parse_deed_text_entries(cleaned_text: str, assumed_unit: str):
         arc_u = normalize_unit_token(arc_unit, default_unit=assumed_unit) if arc_unit else None
         chord = _to_float(chord_len) if chord_len else None
         chord_u = normalize_unit_token(chord_unit, default_unit=assumed_unit) if chord_unit else None
-        chord_bearing = f"{cns} {cbody} {cew}".upper().replace("  "," ") if (cns and cbody and cew) else None
+        if cns and cbody and cew:
+            chord_ns = _normalize_cardinal(cns)
+            chord_ew = _normalize_cardinal(cew)
+            chord_bearing = (
+                f"{chord_ns} {cbody} {chord_ew}".upper().replace("  ", " ")
+                if (chord_ns and chord_ew)
+                else None
+            )
+        else:
+            chord_bearing = None
         start, end = m.span()
         entries.append((start, end, {
             "Type": "Curve", "Bearing": None, "Distance": None, "DistanceUnit": None,
@@ -842,7 +869,13 @@ def _parse_deed_text_entries(cleaned_text: str, assumed_unit: str):
         if _is_within_taken(m.start()):
             continue
         ns, body, ew, dist, unit = m.groups()
-        bearing = f"{ns} {body} {ew}".upper().replace("  ", " ")
+        ns_token = _normalize_cardinal(ns)
+        ew_token = _normalize_cardinal(ew)
+        bearing = (
+            f"{ns_token} {body} {ew_token}".upper().replace("  ", " ")
+            if (ns_token and ew_token)
+            else None
+        )
         unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
         entries.append((m.start(), m.end(), {
             "Type": "Line", "Bearing": bearing, "Distance": _to_float(dist), "DistanceUnit": unit_norm,
