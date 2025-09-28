@@ -356,6 +356,20 @@ def parse_bearing_to_east_ccw_radians(bearing, fmt: str):
     if bearing is None: return 0.0
     s = str(bearing).strip().upper()
     s_clean = s.replace(" ","")
+    simple_dirs = {
+        "N": 0.0,
+        "NE": 45.0,
+        "E": 90.0,
+        "SE": 135.0,
+        "S": 180.0,
+        "SW": 225.0,
+        "W": 270.0,
+        "NW": 315.0,
+    }
+    if s_clean in simple_dirs:
+        deg_from_north_cw = simple_dirs[s_clean]
+        deg_east_ccw = (90.0 - deg_from_north_cw) % 360.0
+        return math.radians(deg_east_ccw)
     m = re.match(r"^([NS])(.+)([EW])$", s_clean)
     if m:
         ns, body, ew = m.groups()
@@ -693,6 +707,7 @@ _CHAR_NORMALIZE_MAP = {
 _DEG_WORD_PATTERN = re.compile(r"(?i)\bDEG(?:REE|REES)?\b")
 _MIN_WORD_PATTERN = re.compile(r"(?i)\bMIN(?:UTE|UTES)?\b")
 _SEC_WORD_PATTERN = re.compile(r"(?i)\bSEC(?:OND|ONDS)?\b")
+_COMPOUND_CARDINAL_PATTERN = re.compile(r"(?i)\b(NORTH|SOUTH)(?:\s+|-)?(EAST|WEST)(?:ERLY)?\b")
 _NORTH_WORD_PATTERN = re.compile(r"(?i)\bNORTH(?:ERLY)?\b")
 _SOUTH_WORD_PATTERN = re.compile(r"(?i)\bSOUTH(?:ERLY)?\b")
 _EAST_WORD_PATTERN = re.compile(r"(?i)\bEAST(?:ERLY)?\b")
@@ -752,6 +767,13 @@ def _clean_text_for_parsing_with_map(t: str):
     _apply_regex(_DEG_WORD_PATTERN, lambda m: "°")
     _apply_regex(_MIN_WORD_PATTERN, lambda m: "'")
     _apply_regex(_SEC_WORD_PATTERN, lambda m: '"')
+    def _compound_cardinal_repl(m):
+        text = m.group(0)
+        suffix = "ERLY" if text.strip().upper().endswith("ERLY") else ""
+        primary = m.group(1).upper()
+        secondary = m.group(2).upper()
+        return f"{primary}{secondary}{suffix}"
+    _apply_regex(_COMPOUND_CARDINAL_PATTERN, _compound_cardinal_repl)
     _apply_regex(_NORTH_WORD_PATTERN, lambda m: "N")
     _apply_regex(_SOUTH_WORD_PATTERN, lambda m: "S")
     _apply_regex(_EAST_WORD_PATTERN, lambda m: "E")
@@ -789,6 +811,29 @@ def _normalize_cardinal(token: Optional[str]) -> Optional[str]:
     }
     return mapping.get(cleaned, cleaned[:1])
 
+
+def _normalize_direction_word(token: Optional[str]) -> Optional[str]:
+    if token is None:
+        return None
+    cleaned = re.sub(r"[^A-Z]", "", str(token).upper())
+    if not cleaned:
+        return None
+    mapping = {
+        "NORTHERLY": "N",
+        "SOUTHERLY": "S",
+        "EASTERLY": "E",
+        "WESTERLY": "W",
+        "NORTHEAST": "NE",
+        "NORTHEASTERLY": "NE",
+        "NORTHWEST": "NW",
+        "NORTHWESTERLY": "NW",
+        "SOUTHEAST": "SE",
+        "SOUTHEASTERLY": "SE",
+        "SOUTHWEST": "SW",
+        "SOUTHWESTERLY": "SW",
+    }
+    return mapping.get(cleaned)
+
 # ---------- FIXED, SAFE, VERBOSE REGEXES ----------
 _LINE_QD_PATTERN = re.compile(r"""
     \b
@@ -816,6 +861,17 @@ _LINE_AZ_PATTERN = re.compile(r"""
     ([0-9]{1,3}(?:\.\d+)?)\s*(?:°|DEG(?:REES?)?)          # azimuth degrees
     .*?
     \b([0-9,]+(?:\.\d+)?)\s*(FEET|FT|METERS?|M|CHAINS?|RODS?|RDS?)  # distance + units
+    (?=[\s,\.])
+    """, re.IGNORECASE | re.DOTALL | re.VERBOSE)
+
+_LINE_SIMPLE_DIR_PATTERN = re.compile(r"""
+    \b
+    (?:THENCE\s+)?(?:RUNNING\s+)?(?:CONTINUING\s+)?(?:ALONG\s+)?(?:THE\s+)?
+    (?P<dir>(?:NORTH|SOUTH)(?:\s+|-)?(?:EAST|WEST)(?:ERLY)?|(?:EAST|WEST|NORTH|SOUTH)ERLY)
+    (?P<prose>[^0-9]{0,80}?)
+    (?:\b(?:FOR\s+)?(?:A\s+)?(?:DIST(?:ANCE)?|LENGTH)\s+(?:OF\s+)?)?
+    (?P<dist>[0-9,]+(?:\.\d+)?)
+    \s*(?P<unit>FEET|FT|METERS?|M|CHAINS?|CHS?|RODS?|RDS?)
     (?=[\s,\.])
     """, re.IGNORECASE | re.DOTALL | re.VERBOSE)
 
@@ -888,6 +944,25 @@ def _parse_deed_text_entries(cleaned_text: str, assumed_unit: str):
             continue
         az_deg, dist, unit = m.groups()
         bearing = str(az_deg).strip()
+        unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
+        entries.append((m.start(), m.end(), {
+            "Type": "Line", "Bearing": bearing, "Distance": _to_float(dist), "DistanceUnit": unit_norm,
+            "Radius": None, "RadiusUnit": None, "Arc Length": None, "ArcUnit": None,
+            "Chord Length": None, "ChordUnit": None, "Chord Bearing": None
+        }))
+
+    for m in _LINE_SIMPLE_DIR_PATTERN.finditer(cleaned_text):
+        if _is_within_taken(m.start()):
+            continue
+        direction_token = m.group("dir")
+        prose = m.group("prose") or ""
+        if re.search(r"\b(CURVE|RADIUS|ARC)\b", prose, re.IGNORECASE):
+            continue
+        bearing = _normalize_direction_word(direction_token)
+        if not bearing:
+            continue
+        dist = m.group("dist")
+        unit = m.group("unit")
         unit_norm = normalize_unit_token(unit, default_unit=assumed_unit)
         entries.append((m.start(), m.end(), {
             "Type": "Line", "Bearing": bearing, "Distance": _to_float(dist), "DistanceUnit": unit_norm,
