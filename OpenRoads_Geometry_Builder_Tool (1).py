@@ -1129,7 +1129,30 @@ def _coerce_value_for_column(col_name: str, val: str):
 
 
 class EditableGrid(ttk.Treeview):
+    STYLE_NAME = "GPI.EditableGrid.Treeview"
+
     def __init__(self, parent, columns, on_edit_commit, **kwargs):
+        style = ttk.Style()
+        try:
+            fg_normal = TEXT_LIGHT if THEME_MODE == "dark" else "#122016"
+            bg_normal = CONSOLE_BG if THEME_MODE == "dark" else "#FFFFFF"
+            fg_selected = PANEL_DARK if THEME_MODE == "dark" else "#122016"
+            style.configure(
+                self.STYLE_NAME,
+                foreground=fg_normal,
+                background=bg_normal,
+                fieldbackground=bg_normal,
+                borderwidth=0,
+            )
+            style.map(
+                self.STYLE_NAME,
+                background=[("selected", GPI_HL)],
+                foreground=[("selected", fg_selected)],
+            )
+        except Exception:
+            pass
+
+        kwargs.setdefault("style", self.STYLE_NAME)
         super().__init__(parent, columns=columns, show="headings", **kwargs)
         self.on_edit_commit = on_edit_commit
         for c in columns:
@@ -1147,7 +1170,12 @@ class EditableGrid(ttk.Treeview):
         if not bbox:
             return
         x,y,w,h = bbox; value = self.set(row_id, self["columns"][col_index])
-        self._editor = tk.Entry(self, relief="flat"); self._editor.insert(0, value)
+        editor_kwargs = {"relief": "flat"}
+        if THEME_MODE == "dark":
+            editor_kwargs.update(bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT)
+        else:
+            editor_kwargs.update(bg="#FFFFFF", fg="#122016", insertbackground="#122016")
+        self._editor = tk.Entry(self, **editor_kwargs); self._editor.insert(0, value)
         self._editor.select_range(0,"end"); self._editor.focus_set()
         self._editor.place(x=x,y=y,width=w,height=h)
         self._editor.bind("<Return>", lambda e: self._commit(row_id, col_index))
