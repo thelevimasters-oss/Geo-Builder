@@ -2284,6 +2284,8 @@ class App(BaseTk):
         self._bind_hint(self.btn_extract_calls, "Parse the edited deed text into calls")
         self.btn_save_excel = self._secondary_button(btns, "Save Excel…", self.save_deed_excel); self.btn_save_excel.pack(side="left", padx=(10,0))
         self._bind_hint(self.btn_save_excel, "Save parsed courses to an Excel file (converter-ready)")
+        self.btn_save_trainer = self._secondary_button(btns, "Save Excel Trainer", self.save_deed_trainer_workbook); self.btn_save_trainer.pack(side="left", padx=(10,0))
+        self._bind_hint(self.btn_save_trainer, "Export the edited calls for AI training (Excel + PDF copy)")
         self.btn_send_converter = self._secondary_button(btns, "Send to Converter", self.send_to_converter); self.btn_send_converter.pack(side="left", padx=(10,0))
         self._bind_hint(self.btn_send_converter, "Auto-fill the Excel path in the Excel → XML tab")
         self._deed_style = ttk.Style(parent)
@@ -3459,6 +3461,178 @@ class App(BaseTk):
             self._log(f"DXF exported → {path}")
         except Exception as exc:
             messagebox.showerror("DXF export failed", str(exc))
+
+    def save_deed_trainer_workbook(self):
+        if self.deed_df is None or self.deed_df.empty:
+            messagebox.showerror("Nothing to save", "No parsed courses to save. Extract first.")
+            return
+        if pandas is None or openpyxl is None:
+            messagebox.showerror(
+                "Missing dependency",
+                "Saving the trainer workbook requires pandas and openpyxl.\nInstall:\n  pip install pandas openpyxl",
+            )
+            return
+        folder_value = self.ai_training_folder_var.get().strip() if hasattr(self, "ai_training_folder_var") else ""
+        if not folder_value:
+            messagebox.showerror(
+                "Training folder not set",
+                "Select an AI training folder in Settings before exporting the trainer workbook.",
+            )
+            return
+        training_dir = Path(folder_value)
+        try:
+            training_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            messagebox.showerror("Training folder unavailable", f"Could not access the training folder:\n{exc}")
+            return
+        pdf_path = getattr(self, "deed_pdf_path", None)
+        if not pdf_path or not Path(pdf_path).exists():
+            messagebox.showerror(
+                "Missing deed PDF",
+                "Select a deed PDF on the Deed PDF tab before exporting the trainer workbook.",
+            )
+            return
+        text_widget = getattr(self, "deed_text", None)
+        deed_text_value = text_widget.get("1.0", "end-1c") if text_widget else ""
+        if not deed_text_value:
+            messagebox.showerror(
+                "No deed text",
+                "Deed text is required to slice the call annotations. Extract or paste deed text before exporting.",
+            )
+            return
+        try:
+            df_export = self.deed_df.copy()
+        except Exception:
+            df_export = pandas.DataFrame(self.deed_df)
+        manual_entries = sorted(
+            [entry for entry in getattr(self, "manual_call_entries", []) if isinstance(entry, dict)],
+            key=lambda item: item.get("start", 0),
+        )
+        units_setting = self.settings.get("units_in", "feet") if isinstance(self.settings, dict) else "feet"
+
+        def _normalize_number(value: Any) -> Any:
+            if value in (None, ""):
+                return ""
+            if isinstance(value, (int, float)):
+                return round(float(value), 6)
+            try:
+                stripped = str(value).strip()
+                if not stripped:
+                    return ""
+                return round(float(stripped), 6)
+            except Exception:
+                return str(value).strip()
+
+        def _row_key(row_dict: Dict[str, Any]) -> Tuple[Any, ...]:
+            return (
+                str(row_dict.get("Type") or "").strip().lower(),
+                str(row_dict.get("Bearing") or "").strip(),
+                _normalize_number(row_dict.get("Distance (ft)")),
+                _normalize_number(row_dict.get("Radius (ft)")),
+                _normalize_number(row_dict.get("Arc Length (ft)")),
+                _normalize_number(row_dict.get("Chord Length (ft)")),
+                str(row_dict.get("Chord Bearing") or "").strip(),
+            )
+
+        span_records: List[Dict[str, Any]] = []
+        for entry in manual_entries:
+            start = entry.get("start")
+            end = entry.get("end")
+            if not isinstance(start, int) or not isinstance(end, int) or end <= start:
+                continue
+            data = entry.get("data") if isinstance(entry.get("data"), dict) else {}
+            schema_row: Dict[str, Any] = {}
+            if data:
+                try:
+                    entry_df = pandas.DataFrame([data])
+                    schema_df = dataframe_to_excel_schema(entry_df, input_units_setting=units_setting)
+                    if not schema_df.empty:
+                        schema_row = schema_df.iloc[0].to_dict()
+                except Exception:
+                    schema_row = {}
+            start_clamped = max(0, min(len(deed_text_value), start))
+            end_clamped = max(start_clamped, min(len(deed_text_value), end))
+            snippet = deed_text_value[start_clamped:end_clamped]
+            span_records.append(
+                {
+                    "start": start,
+                    "end": end,
+                    "text": snippet,
+                    "schema": schema_row,
+                }
+            )
+
+        used_spans = [False] * len(span_records)
+        call_texts: List[str] = []
+        start_end_markers: List[str] = []
+        unmatched_rows = 0
+        for _, row in df_export.iterrows():
+            row_dict = row.to_dict()
+            row_key = _row_key(row_dict)
+            selected_index = None
+            for idx, record in enumerate(span_records):
+                if used_spans[idx]:
+                    continue
+                schema = record.get("schema") or {}
+                if schema and _row_key(schema) == row_key:
+                    selected_index = idx
+                    break
+            if selected_index is None:
+                for idx, record in enumerate(span_records):
+                    if not used_spans[idx]:
+                        selected_index = idx
+                        break
+            if selected_index is not None:
+                used_spans[selected_index] = True
+                record = span_records[selected_index]
+                call_texts.append(record.get("text", ""))
+                start_end_markers.append(f"{record.get('start')},{record.get('end')}")
+            else:
+                unmatched_rows += 1
+                call_texts.append("")
+                start_end_markers.append("")
+
+        df_export["Deed_Call_Text"] = call_texts
+        df_export["Start_End"] = start_end_markers
+        ordered_cols = [c for c in df_export.columns if c not in ("Deed_Call_Text", "Start_End")]
+        ordered_cols.extend(["Deed_Call_Text", "Start_End"])
+        df_export = df_export[ordered_cols]
+        unused_spans = len(span_records) - sum(1 for used in used_spans if used)
+
+        pdf_path = Path(pdf_path)
+        workbook_path = training_dir / f"{pdf_path.stem}_correct.xlsx"
+        pdf_dest = training_dir / pdf_path.name
+        pdf_copied = False
+        try:
+            df_export.to_excel(workbook_path, index=False, engine="openpyxl")
+            copy_required = True
+            try:
+                if pdf_dest.exists():
+                    copy_required = not pdf_dest.samefile(pdf_path)
+            except Exception:
+                copy_required = True
+            if copy_required:
+                shutil.copy2(pdf_path, pdf_dest)
+                pdf_copied = True
+        except Exception as exc:
+            self._log(f"Trainer export error: {exc}")
+            messagebox.showerror("Trainer export failed", str(exc))
+            return
+
+        log_msg = f"Trainer export → Excel: {workbook_path} | PDF copy: {pdf_dest}"
+        self._log(log_msg)
+        if not pdf_copied:
+            self._log("Trainer export note: Source PDF already present in training folder; copy skipped.")
+        if unmatched_rows:
+            self._log(f"Trainer export note: {unmatched_rows} row(s) missing call spans; Start_End left blank.")
+        if unused_spans > 0:
+            self._log(f"Trainer export note: {unused_spans} unused manual span(s) did not match Excel rows.")
+        info_lines = ["Trainer workbook saved.", f"Excel: {workbook_path}", f"PDF copy: {pdf_dest}"]
+        if not pdf_copied:
+            info_lines.append("(PDF already present; copy skipped.)")
+        if unmatched_rows:
+            info_lines.append(f"⚠️ {unmatched_rows} row(s) had no matching call spans.")
+        messagebox.showinfo("Trainer export complete", "\n".join(info_lines))
 
     def save_deed_excel(self):
         if self.deed_df is None or self.deed_df.empty:
