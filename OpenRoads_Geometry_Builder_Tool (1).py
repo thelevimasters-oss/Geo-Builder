@@ -397,7 +397,14 @@ def ensure_spacy_lexeme_norm(nlp, logger=None):
         if spacy_lookups_data is not None:
             load_lookups = getattr(spacy_lookups_data, "load_lookups", None)
             if callable(load_lookups):
-                lookups = load_lookups(lang=getattr(nlp, "lang", "en"))
+                try:
+                    lookups = load_lookups(
+                        lang=getattr(nlp, "lang", "en"),
+                        tables=["lexeme_norm"],
+                    )
+                except TypeError:
+                    # Older versions of spacy-lookups-data don't accept ``tables``.
+                    lookups = load_lookups(lang=getattr(nlp, "lang", "en"))
                 if _has_lookup_table(lookups, "lexeme_norm"):
                     nlp.vocab.lookups = lookups
                     loaded_from_package = True
@@ -431,6 +438,28 @@ def ensure_spacy_lexeme_norm(nlp, logger=None):
             pass
     elif logger:
         logger("Unable to import spaCy Lookups class for fallback lexeme_norm table.")
+
+    # As an additional safeguard (in case ``Lookups`` could not be imported),
+    # try to attach a very small shim that mimics the lookup table behaviour.
+    if not _has_lookup_table(getattr(nlp.vocab, "lookups", None), "lexeme_norm"):
+        class _MinimalLookups(dict):
+            def has_table(self, name):
+                return name in self
+
+            def add_table(self, name, value):
+                self[name] = value
+
+        lookups = getattr(nlp.vocab, "lookups", None)
+        if lookups is None or not hasattr(lookups, "add_table"):
+            lookups = _MinimalLookups()
+        try:
+            lookups.add_table("lexeme_norm", {})
+        except Exception:
+            pass
+        try:
+            nlp.vocab.lookups = lookups
+        except Exception:
+            pass
 
 
 def ensure_startup_dependencies(logger=None):
