@@ -2477,25 +2477,37 @@ class App(BaseTk):
             try:
                 self.pdf_entry.drop_target_register(DND_FILES); self.pdf_entry.dnd_bind("<<Drop>>", self._on_drop_pdf)
             except Exception: pass
-        extract_row = tk.Frame(parent, bg=PANEL_DARK); extract_row.pack(fill="x", padx=16, pady=(10,6))
-        self.btn_extract_text = self._cta_button(extract_row, "Extract Text"); self.btn_extract_text.pack(side="left")
+        action_panel = tk.Frame(parent, bg=PANEL_DARK); action_panel.pack(fill="x", padx=16, pady=(10,6))
+        action_panel.grid_columnconfigure(0, weight=1)
+        action_panel.grid_columnconfigure(1, weight=1)
+        self.btn_extract_text = self._cta_button(action_panel, "Extract Text")
+        self.btn_extract_text.grid(row=0, column=0, sticky="ew")
         self.btn_extract_text.configure(command=self.extract_deed_text)
         self._bind_hint(self.btn_extract_text, "Extract deed text into an editable preview")
-        self.btn_ai_extract_text = self._cta_button(extract_row, "AI Extract Text"); self.btn_ai_extract_text.pack(side="left", padx=(10,0))
-        self.btn_ai_extract_text.configure(command=self.ai_extract_text_and_calls)
-        self._bind_hint(self.btn_ai_extract_text, "Extract deed text with OCR and parse calls using the AI model")
+        self.btn_ai_call_detector = self._cta_button(action_panel, "AI Call Detector")
+        self.btn_ai_call_detector.grid(row=0, column=1, sticky="ew", padx=(12,0))
+        self.btn_ai_call_detector.configure(command=self.ai_detect_calls_in_text)
+        self._bind_hint(self.btn_ai_call_detector, "Highlight deed calls found by the AI model")
 
-        btns = tk.Frame(parent, bg=PANEL_DARK); btns.pack(fill="x", padx=16, pady=(6,6))
-        self.btn_add_line = self._secondary_button(btns, "Add Line", self.add_manual_line); self.btn_add_line.pack(side="left")
+        edit_tools = tk.Frame(parent, bg=PANEL_DARK); edit_tools.pack(fill="x", padx=16, pady=(6,6))
+        for idx in range(3):
+            edit_tools.grid_columnconfigure(idx, weight=1)
+        self.btn_add_line = self._secondary_button(edit_tools, "Add Line", self.add_manual_line)
+        self.btn_add_line.grid(row=0, column=0, sticky="ew")
         self._bind_hint(self.btn_add_line, "Select line text in the deed and add it to the call list")
-        self.btn_edit_line = self._secondary_button(btns, "Edit Line", self.edit_manual_line); self.btn_edit_line.pack(side="left", padx=(10,0))
+        self.btn_edit_line = self._secondary_button(edit_tools, "Edit Line", self.edit_manual_line)
+        self.btn_edit_line.grid(row=0, column=1, sticky="ew", padx=(8,0))
         self._bind_hint(self.btn_edit_line, "Adjust the highlighted text for an existing manual line call")
-        self.btn_add_curve = self._secondary_button(btns, "Add Curve", self.add_manual_curve); self.btn_add_curve.pack(side="left", padx=(10,0))
+        self.btn_add_curve = self._secondary_button(edit_tools, "Add Curve", self.add_manual_curve)
+        self.btn_add_curve.grid(row=0, column=2, sticky="ew", padx=(8,0))
         self._bind_hint(self.btn_add_curve, "Select curve text in the deed and add it to the call list")
-        self.btn_edit_curve = self._secondary_button(btns, "Edit Curve", self.edit_manual_curve); self.btn_edit_curve.pack(side="left", padx=(10,0))
+        self.btn_edit_curve = self._secondary_button(edit_tools, "Edit Curve", self.edit_manual_curve)
+        self.btn_edit_curve.grid(row=1, column=0, sticky="ew", pady=(8,0))
         self._bind_hint(self.btn_edit_curve, "Adjust the highlighted text for an existing manual curve call")
-        btn_clear = self._secondary_button(btns, "Clear Text", self.clear_deed_text); btn_clear.pack(side="left", padx=(10,0))
+        btn_clear = self._secondary_button(edit_tools, "Clear Text", self.clear_deed_text)
+        btn_clear.grid(row=1, column=1, sticky="ew", padx=(8,0), pady=(8,0))
         self._bind_hint(btn_clear, "Clear the editable deed text")
+        tk.Frame(edit_tools, bg=PANEL_DARK).grid(row=1, column=2, sticky="ew", padx=(8,0), pady=(8,0))
         tk.Label(parent, text="Editable Deed Text", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(8,4))
         text_frame = tk.Frame(parent, bg=PANEL_DARK); text_frame.pack(fill="both", expand=True, padx=16, pady=(0,12))
         self.deed_text = tk.Text(text_frame, wrap="word", font=("Consolas", 10),
@@ -2754,11 +2766,27 @@ class App(BaseTk):
         try:
             txt = extract_text_from_pdf(p, logger=logger) or ""
             if getattr(self, "pb_deed", None): self.pb_deed["value"] = 55
-            if not txt.strip():
-                logger("No text could be extracted; editing area left blank.")
-                messagebox.showwarning("No text","No text found in the PDF (no text layer and OCR unavailable).")
         except Exception as e:
             logger(f"Extraction error: {e}"); messagebox.showerror("Extraction error", str(e)); return
+        if not txt.strip():
+            logger("No embedded text detected; attempting OCR fallback…")
+            if pytesseract is None:
+                logger("pytesseract not installed; OCR fallback unavailable.")
+            else:
+                try:
+                    txt = ocr_pdf_with_pytesseract(
+                        p,
+                        tesseract_path=self.settings.get("tesseract_path"),
+                        logger=logger,
+                    ) or ""
+                    if getattr(self, "pb_deed", None): self.pb_deed["value"] = 80
+                except Exception as exc:
+                    logger(f"OCR fallback failed: {exc}")
+        if not txt.strip():
+            logger("No text could be extracted; editing area left blank.")
+            messagebox.showwarning("No text","No text found in the PDF (no text layer and OCR unavailable).")
+            if getattr(self, "pb_deed", None): self.pb_deed["value"] = 0
+            return
         if getattr(self, "deed_text", None):
             self.deed_text.delete("1.0", "end")
             if txt:
@@ -2771,79 +2799,11 @@ class App(BaseTk):
             self.highlight_calls_preview(quiet=True)
 
 
-    def ai_extract_text_and_calls(self):
-        if spacy is None:
-            messagebox.showerror("spaCy not available", "spaCy is required for AI extraction and could not be installed automatically.\nInstall manually with: pip install spacy")
-            return
-        p = Path(self.pdf_var.get() or "")
-        if not p or not p.exists() or p.suffix.lower() != ".pdf":
-            messagebox.showerror("Missing or invalid PDF", "Please select a valid .pdf deed file before running AI extraction.")
-            return
-        model = self._get_or_load_deed_ai_model()
-        if model is None:
-            messagebox.showwarning("Model unavailable", "Train the AI model from Settings before running AI extraction.")
-            return
-        self._log(f"AI extract & parse → {p}")
-        progress = getattr(self, "pb_deed", None)
-        if progress:
-            progress["value"] = 0
-            progress.update_idletasks()
-
-        def _update_progress(done_pages: int, total_pages: int, stage: str = "ocr"):
-            if not progress:
-                return
-            total_pages = max(total_pages, 1)
-            if stage == "ocr":
-                ratio = min(max(done_pages, 0), total_pages) / total_pages
-                progress["value"] = 10 + ratio * 60
-            else:
-                progress["value"] = max(progress["value"], 80)
-            progress.update_idletasks()
-        tess_path = self.settings.get("tesseract_path")
-        if tess_path:
-            try_set_tesseract_cmd(tess_path, logger=self._log)
-        try:
-            text_value = ocr_pdf_with_pytesseract(
-                p,
-                tesseract_path=tess_path,
-                logger=self._log,
-                progress_callback=_update_progress,
-            ) or ""
-        except Exception as exc:
-            if progress:
-                progress["value"] = 0
-                progress.update_idletasks()
-            messagebox.showerror("AI extraction failed", str(exc))
-            self._log(f"AI extraction failed: {exc}")
-            return
-        if not text_value.strip():
-            if progress:
-                progress["value"] = 0
-                progress.update_idletasks()
-            messagebox.showwarning("No OCR text", "The AI extraction did not return any text for this PDF.")
-            self._log("AI extraction produced no text.")
-            return
-        if getattr(self, "deed_text", None):
-            self.deed_text.delete("1.0", "end")
-            self.deed_text.insert("1.0", text_value)
-        if progress:
-            progress["value"] = max(progress["value"], 75)
-            progress.update_idletasks()
-        self.deed_pdf_path = p
-        self.manual_call_entries = []
-        self.deed_ai_last_results = []
-        try:
-            calls = extract_deed_calls_with_model(model, text_value)
-            self.deed_ai_last_results = calls
-        except Exception as exc:
-            if progress:
-                progress["value"] = 0
-                progress.update_idletasks()
-            messagebox.showerror("AI parsing failed", str(exc))
-            self._log(f"AI parsing failed: {exc}")
-            return
+    def _build_ai_call_entries(self, text_value: str, calls: List[Tuple[str, Tuple[int, int]]]) -> List[Dict[str, Any]]:
+        if not text_value:
+            return []
         assumed_unit = self.settings.get("units_in", "feet")
-        ai_entries = []
+        ai_entries: List[Dict[str, Any]] = []
         for snippet, span in calls or []:
             start, end = span
             cleaned = clean_text_for_parsing(snippet)
@@ -2872,23 +2832,50 @@ class App(BaseTk):
                 self._log(f"AI call could not be categorized: {snippet[:80]}…")
         if ai_entries:
             ai_entries.sort(key=lambda item: item.get("start", 0))
+        return ai_entries
+
+    def ai_detect_calls_in_text(self):
+        if spacy is None:
+            messagebox.showerror("spaCy not available", "spaCy is required for the AI call detector and could not be installed automatically.\nInstall manually with: pip install spacy")
+            return
+        model = self._get_or_load_deed_ai_model()
+        if model is None:
+            messagebox.showwarning("Model unavailable", "Train the AI model from Settings before running the AI call detector.")
+            return
+        text_widget = getattr(self, "deed_text", None)
+        text_value = text_widget.get("1.0", "end-1c") if text_widget else ""
+        if not text_value.strip():
+            messagebox.showinfo("No deed text", "Extract or paste deed text before running the AI call detector.")
+            return
+        self._log("AI call detector analyzing deed text…")
+        progress = getattr(self, "pb_deed", None)
+        if progress:
+            progress["value"] = 0
+            progress.update_idletasks()
+        try:
+            calls = extract_deed_calls_with_model(model, text_value)
+        except Exception as exc:
+            if progress:
+                progress["value"] = 0
+                progress.update_idletasks()
+            messagebox.showerror("AI detection failed", str(exc))
+            self._log(f"AI detection failed: {exc}")
+            return
+        self.deed_ai_last_results = calls
+        ai_entries = self._build_ai_call_entries(text_value, calls)
+        if ai_entries:
             self.manual_call_entries = ai_entries
+        else:
+            self.manual_call_entries = []
         if getattr(self, "deed_text", None):
             self.deed_text.tag_remove("call_line", "1.0", "end")
             self.deed_text.tag_remove("call_curve", "1.0", "end")
         self._apply_manual_call_tags()
         self.highlight_calls_preview(quiet=True)
-        if pandas is not None:
-            try:
-                self.extract_calls_from_text()
-            except Exception as exc:
-                self._log(f"AI call parsing error: {exc}")
-        else:
-            self._log("pandas not available; skipping call parsing after AI extraction.")
-        msg = f"AI extracted {len(ai_entries)} call(s)." if ai_entries else "AI extraction finished with no calls detected."
+        msg = f"AI highlighted {len(ai_entries)} call(s)." if ai_entries else "AI did not detect any calls to highlight."
         self._log(msg)
         if not ai_entries:
-            messagebox.showinfo("No calls detected", "The AI model did not detect any deed calls in this PDF.")
+            messagebox.showinfo("No calls detected", "The AI model did not detect any deed calls in the current text.")
         if progress:
             progress["value"] = 100
             progress.update_idletasks()
