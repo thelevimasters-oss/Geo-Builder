@@ -1341,28 +1341,49 @@ class DetailsDialog(tk.Toplevel):
 
 class SettingsDialog(tk.Toplevel):
     def __init__(self, master, current_mode, current_units_in, current_units_out, current_bearing_fmt,
-                 current_tesseract_path, current_spcs, on_apply):
+                 current_tesseract_path, current_spcs, current_ai_dir, on_apply):
         super().__init__(master)
-        self.title("Settings"); self.configure(bg=PANEL_DARK); self.geometry("520x420")
+        self.title("Settings"); self.configure(bg=PANEL_DARK); self.geometry("560x520")
         self.transient(master); self.grab_set(); self.on_apply = on_apply
-        tk.Label(self, text="Appearance", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(12,6))
+        self.ai_training_var = tk.StringVar(value=current_ai_dir or "")
+        container = tk.Frame(self, bg=PANEL_DARK)
+        container.pack(fill="both", expand=True)
+        canvas = tk.Canvas(container, bg=PANEL_DARK, highlightthickness=0, borderwidth=0)
+        canvas.pack(side="left", fill="both", expand=True)
+        vscroll = tk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        vscroll.pack(side="right", fill="y")
+        canvas.configure(yscrollcommand=vscroll.set)
+        content = tk.Frame(canvas, bg=PANEL_DARK)
+        window_id = canvas.create_window((0, 0), window=content, anchor="nw")
+        def _sync_scroll(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+            canvas.itemconfigure(window_id, width=event.width)
+        content.bind("<Configure>", _sync_scroll)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+        tk.Label(content, text="Appearance", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(12,6))
         self.mode_var = tk.StringVar(value=current_mode)
-        box = tk.Frame(self, bg=PANEL_DARK); box.pack(anchor="w", padx=14, pady=(2,10))
+        box = tk.Frame(content, bg=PANEL_DARK)
+        box.pack(anchor="w", padx=14, pady=(2,10))
         tk.Radiobutton(box, text="Dark mode", variable=self.mode_var, value="dark",
                        bg=PANEL_DARK, fg=TEXT_LIGHT, selectcolor=PANEL_DARK,
                        activebackground=PANEL_DARK, activeforeground=TEXT_LIGHT).pack(anchor="w")
         tk.Radiobutton(box, text="Light mode", variable=self.mode_var, value="light",
                        bg=PANEL_DARK, fg=TEXT_LIGHT, selectcolor=PANEL_DARK,
                        activebackground=PANEL_DARK, activeforeground=TEXT_LIGHT).pack(anchor="w")
-        tk.Label(self, text="Units", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
-        g1 = tk.Frame(self, bg=PANEL_DARK); g1.pack(fill="x", padx=14, pady=(2,2))
+        tk.Label(content, text="Units", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
+        g1 = tk.Frame(content, bg=PANEL_DARK)
+        g1.pack(fill="x", padx=14, pady=(2,2))
         tk.Label(g1, text="Input Units:", bg=PANEL_DARK, fg=TEXT_SOFT, width=14, anchor="w").pack(side="left")
-        self.units_in_var = tk.StringVar(value=current_units_in); tk.OptionMenu(g1, self.units_in_var, "feet","meters","rods","chains").pack(side="left")
-        g2 = tk.Frame(self, bg=PANEL_DARK); g2.pack(fill="x", padx=14, pady=(2,8))
+        self.units_in_var = tk.StringVar(value=current_units_in)
+        tk.OptionMenu(g1, self.units_in_var, "feet", "meters", "rods", "chains").pack(side="left")
+        g2 = tk.Frame(content, bg=PANEL_DARK)
+        g2.pack(fill="x", padx=14, pady=(2,8))
         tk.Label(g2, text="Output Units:", bg=PANEL_DARK, fg=TEXT_SOFT, width=14, anchor="w").pack(side="left")
-        self.units_out_var = tk.StringVar(value=current_units_out); tk.OptionMenu(g2, self.units_out_var, "feet","meters").pack(side="left")
-        tk.Label(self, text="Coordinate System", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
-        cs_frame = tk.Frame(self, bg=PANEL_DARK); cs_frame.pack(fill="x", padx=14, pady=(2,8))
+        self.units_out_var = tk.StringVar(value=current_units_out)
+        tk.OptionMenu(g2, self.units_out_var, "feet", "meters").pack(side="left")
+        tk.Label(content, text="Coordinate System", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
+        cs_frame = tk.Frame(content, bg=PANEL_DARK)
+        cs_frame.pack(fill="x", padx=14, pady=(2,8))
         tk.Label(cs_frame, text="SPCS Selection:", bg=PANEL_DARK, fg=TEXT_SOFT, width=14, anchor="w").pack(side="left")
         self._spcs_label = tk.Label(cs_frame, text=current_spcs or "None", bg=PANEL_DARK, fg=TEXT_LIGHT, anchor="w")
         self._spcs_label.pack(side="left", padx=(0,10))
@@ -1370,17 +1391,19 @@ class SettingsDialog(tk.Toplevel):
                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
                   relief="flat", padx=10, pady=5, cursor="hand2").pack(side="left")
-        tk.Label(self, text="Bearing Format", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
+        tk.Label(content, text="Bearing Format", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
         self.bearing_var = tk.StringVar(value=current_bearing_fmt)
-        b = tk.Frame(self, bg=PANEL_DARK); b.pack(anchor="w", padx=14, pady=(2,10))
+        b = tk.Frame(content, bg=PANEL_DARK)
+        b.pack(anchor="w", padx=14, pady=(2,10))
         tk.Radiobutton(b, text="Degrees–Minutes–Seconds (DMS)", variable=self.bearing_var, value="dms",
                        bg=PANEL_DARK, fg=TEXT_LIGHT, selectcolor=PANEL_DARK,
                        activebackground=PANEL_DARK, activeforeground=TEXT_LIGHT).pack(anchor="w")
         tk.Radiobutton(b, text="Decimal Degrees", variable=self.bearing_var, value="decimal",
                        bg=PANEL_DARK, fg=TEXT_LIGHT, selectcolor=PANEL_DARK,
                        activebackground=PANEL_DARK, activeforeground=TEXT_LIGHT).pack(anchor="w")
-        tk.Label(self, text="OCR (Tesseract) — optional for scanned PDFs", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
-        o = tk.Frame(self, bg=PANEL_DARK); o.pack(fill="x", padx=14, pady=(2,4))
+        tk.Label(content, text="OCR (Tesseract) — optional for scanned PDFs", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(10,6))
+        o = tk.Frame(content, bg=PANEL_DARK)
+        o.pack(fill="x", padx=14, pady=(2,4))
         tk.Label(o, text="tesseract.exe path:", bg=PANEL_DARK, fg=TEXT_SOFT, width=14, anchor="w").pack(side="left")
         self.tesseract_var = tk.StringVar(value=current_tesseract_path or "")
         self.tess_entry = tk.Entry(o, textvariable=self.tesseract_var, bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
@@ -1390,12 +1413,32 @@ class SettingsDialog(tk.Toplevel):
                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
                   relief="flat", padx=10, pady=5, cursor="hand2").pack(side="left", padx=6)
-        btns = tk.Frame(self, bg=PANEL_DARK); btns.pack(fill="x", padx=14, pady=(8,14))
-        tk.Button(btns, text="Cancel", command=self.destroy,
+        tk.Label(content, text="AI Tools", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(12,6))
+        tk.Label(content, text="Manage the spaCy deed-call model and training library.", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",9), wraplength=460, justify="left").pack(anchor="w", padx=14, pady=(0,6))
+        ai_path_row = tk.Frame(content, bg=PANEL_DARK)
+        ai_path_row.pack(fill="x", padx=14, pady=(0,8))
+        tk.Label(ai_path_row, text="Training folder:", bg=PANEL_DARK, fg=TEXT_SOFT, width=14, anchor="w").pack(side="left")
+        self.ai_entry = tk.Entry(ai_path_row, textvariable=self.ai_training_var, bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT, relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER)
+        self.ai_entry.pack(side="left", fill="x", expand=True)
+        tk.Button(ai_path_row, text="Browse…", command=self._browse_ai_folder,
+                  bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
+                  fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
+                  relief="flat", padx=10, pady=5, cursor="hand2").pack(side="left", padx=6)
+        ai_btns = tk.Frame(content, bg=PANEL_DARK)
+        ai_btns.pack(fill="x", padx=14, pady=(0,10))
+        tk.Button(ai_btns, text="Train Model", command=self._train_ai_model,
+                  bg=GPI_HL, fg=GPI_GREEN, relief="flat", padx=14, pady=6, cursor="hand2").pack(side="left")
+        tk.Button(ai_btns, text="Export Last Calls…", command=self._export_ai_calls,
+                  bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
+                  fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
+                  relief="flat", padx=12, pady=6, cursor="hand2").pack(side="left", padx=(10,0))
+        footer = tk.Frame(self, bg=PANEL_DARK)
+        footer.pack(fill="x", padx=14, pady=(8,14))
+        tk.Button(footer, text="Cancel", command=self.destroy,
                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
                   relief="flat", padx=12, pady=6, cursor="hand2").pack(side="right")
-        tk.Button(btns, text="Apply", command=self._apply,
+        tk.Button(footer, text="Apply", command=self._apply,
                   bg=GPI_HL, fg=GPI_GREEN, relief="flat", padx=16, pady=6, cursor="hand2").pack(side="right", padx=6)
     def _browse_tess(self):
         p = filedialog.askopenfilename(title="Select tesseract.exe", filetypes=[("tesseract.exe","tesseract.exe"),("All files","*.*")])
@@ -1405,9 +1448,24 @@ class SettingsDialog(tk.Toplevel):
         self.master.open_spcs_dialog()
         value = getattr(self.master, "selected_spcs", "")
         self._spcs_label.config(text=value or "None")
+    def _browse_ai_folder(self):
+        folder = self.master.select_ai_training_folder(parent=self)
+        if folder:
+            self.ai_training_var.set(folder)
+
+    def _train_ai_model(self):
+        value = (self.ai_training_var.get() or "").strip()
+        self.master.ai_training_folder_var.set(value)
+        self.master.settings["ai_training_dir"] = value
+        self.master._save_user_config()
+        self.master.train_deed_ai_model(parent=self)
+
+    def _export_ai_calls(self):
+        self.master.save_deed_ai_calls(parent=self)
+
     def _apply(self):
         self.on_apply(self.mode_var.get(), self.units_in_var.get(), self.units_out_var.get(),
-                      self.bearing_var.get(), self.tesseract_var.get())
+                      self.bearing_var.get(), self.tesseract_var.get(), self.ai_training_var.get())
         self.destroy()
 
 UNCERTAIN_WRAP_LEFT = "⟪"
@@ -1698,10 +1756,16 @@ class App(BaseTk):
             try:
                 self.pdf_entry.drop_target_register(DND_FILES); self.pdf_entry.dnd_bind("<<Drop>>", self._on_drop_pdf)
             except Exception: pass
-        btns = tk.Frame(parent, bg=PANEL_DARK); btns.pack(fill="x", padx=16, pady=(10,6))
-        self.btn_extract_text = self._cta_button(btns, "Extract Text"); self.btn_extract_text.pack(side="left"); self.btn_extract_text.configure(command=self.extract_deed_text)
+        extract_row = tk.Frame(parent, bg=PANEL_DARK); extract_row.pack(fill="x", padx=16, pady=(10,6))
+        self.btn_extract_text = self._cta_button(extract_row, "Extract Text"); self.btn_extract_text.pack(side="left")
+        self.btn_extract_text.configure(command=self.extract_deed_text)
         self._bind_hint(self.btn_extract_text, "Extract deed text into an editable preview")
-        self.btn_add_line = self._secondary_button(btns, "Add Line", self.add_manual_line); self.btn_add_line.pack(side="left", padx=(10,0))
+        self.btn_ai_extract_text = self._cta_button(extract_row, "AI Extract Text"); self.btn_ai_extract_text.pack(side="left", padx=(10,0))
+        self.btn_ai_extract_text.configure(command=self.ai_extract_text_and_calls)
+        self._bind_hint(self.btn_ai_extract_text, "Extract deed text with OCR and parse calls using the AI model")
+
+        btns = tk.Frame(parent, bg=PANEL_DARK); btns.pack(fill="x", padx=16, pady=(6,6))
+        self.btn_add_line = self._secondary_button(btns, "Add Line", self.add_manual_line); self.btn_add_line.pack(side="left")
         self._bind_hint(self.btn_add_line, "Select line text in the deed and add it to the call list")
         self.btn_edit_line = self._secondary_button(btns, "Edit Line", self.edit_manual_line); self.btn_edit_line.pack(side="left", padx=(10,0))
         self._bind_hint(self.btn_edit_line, "Adjust the highlighted text for an existing manual line call")
@@ -1724,92 +1788,37 @@ class App(BaseTk):
         info_msg = ("Extract the deed PDF to populate the text above.\n"
                     "Review and edit as needed before running call extraction from the next tab.")
         tk.Label(parent, text=info_msg, justify="left", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(anchor="w", padx=16, pady=(0,12))
-        self._build_deed_ai_panel(parent)
 
-    def _build_deed_ai_panel(self, parent):
-        separator = tk.Frame(parent, bg=PANEL_BORDER, height=2)
-        separator.pack(fill="x", padx=16, pady=(8, 16))
-        header = tk.Label(parent, text="AI Deed Call Review", bg=PANEL_DARK, fg=TEXT_LIGHT,
-                          font=("Segoe UI", 11, "bold"))
-        header.pack(anchor="w", padx=16)
-        desc = ("Train a spaCy model on labeled deed calls, then analyze new scanned deeds."
-                " OCR uses pdf2image and pytesseract to extract text before entity recognition.")
-        tk.Label(parent, text=desc, wraplength=760, justify="left", bg=PANEL_DARK,
-                 fg=TEXT_SOFT, font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(4, 10))
-
-        folder_row = tk.Frame(parent, bg=PANEL_DARK)
-        folder_row.pack(fill="x", padx=16, pady=(0, 8))
-        tk.Label(folder_row, text="Training Library", bg=PANEL_DARK, fg=TEXT_LIGHT,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", side="left")
-
-        path_row = tk.Frame(parent, bg=PANEL_DARK)
-        path_row.pack(fill="x", padx=16, pady=(0, 10))
-        entry = tk.Entry(path_row, textvariable=self.ai_training_folder_var, font=("Segoe UI", 10),
-                         bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
-                         relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER)
-        entry.pack(side="left", fill="x", expand=True)
-        browse_btn = self._secondary_button(path_row, "Select Folder", self.select_ai_training_folder)
-        browse_btn.pack(side="left", padx=(10, 0))
-        self._bind_hint(entry, "Choose a folder with deed PDFs and labeled Excel files")
-        self._bind_hint(browse_btn, "Browse for the deed AI training folder")
-
-        action_row = tk.Frame(parent, bg=PANEL_DARK)
-        action_row.pack(fill="x", padx=16, pady=(0, 10))
-        train_btn = self._cta_button(action_row, "Train Model")
-        train_btn.configure(command=self.train_deed_ai_model)
-        train_btn.pack(side="left")
-        analyze_btn = self._secondary_button(action_row, "Analyze Deed", self.run_deed_ai_analysis)
-        analyze_btn.pack(side="left", padx=(10, 0))
-        save_btn = self._secondary_button(action_row, "Save Calls…", self.save_deed_ai_calls)
-        save_btn.pack(side="left", padx=(10, 0))
-        self._bind_hint(train_btn, "Train or retrain the spaCy model with the selected library")
-        self._bind_hint(analyze_btn, "Select a deed PDF and extract deed calls using the AI model")
-        self._bind_hint(save_btn, "Export the latest AI calls to CSV")
-
-        output_frame = tk.Frame(parent, bg=PANEL_DARK)
-        output_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
-        tk.Label(output_frame, text="Extracted Calls", bg=PANEL_DARK, fg=TEXT_LIGHT,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        text_frame = tk.Frame(output_frame, bg=PANEL_DARK)
-        text_frame.pack(fill="both", expand=True, pady=(4, 0))
-        self.ai_output_text = tk.Text(text_frame, wrap="word", font=("Consolas", 10), height=10,
-                                      bg=CONSOLE_BG, fg=TEXT_LIGHT, relief="flat",
-                                      highlightthickness=1, highlightbackground=PANEL_BORDER)
-        self.ai_output_text.pack(side="left", fill="both", expand=True)
-        scroll = tk.Scrollbar(text_frame, orient="vertical", command=self.ai_output_text.yview)
-        scroll.pack(side="right", fill="y")
-        self.ai_output_text.configure(yscrollcommand=scroll.set, state="disabled")
-        self._update_ai_output(self.deed_ai_last_results)
-
-    def select_ai_training_folder(self):
-        folder = filedialog.askdirectory(parent=self, title="Select Deed AI Training Folder")
+    def select_ai_training_folder(self, parent=None):
+        folder = filedialog.askdirectory(parent=parent or self, title="Select Deed AI Training Folder")
         if not folder:
-            return
+            return None
         self.ai_training_folder_var.set(folder)
         self.settings["ai_training_dir"] = folder
         self._save_user_config()
         self._log(f"AI training folder set → {folder}")
+        return folder
 
-    def train_deed_ai_model(self):
+    def train_deed_ai_model(self, parent=None):
         if spacy is None:
-            messagebox.showerror("spaCy not available", "Install spaCy to train the AI model.\nCommand: pip install spacy", parent=self)
+            messagebox.showerror("spaCy not available", "Install spaCy to train the AI model.\nCommand: pip install spacy", parent=parent or self)
             return
         folder_path = Path(self.ai_training_folder_var.get() or "")
         if not folder_path.exists():
-            messagebox.showwarning("Training folder missing", "Select a training folder that contains deed PDFs and labeled Excel files.", parent=self)
+            messagebox.showwarning("Training folder missing", "Select a training folder that contains deed PDFs and labeled Excel files.", parent=parent or self)
             return
         try:
             dataset = load_deed_training_dataset(folder_path, tesseract_path=self.settings.get("tesseract_path"), logger=self._log)
             if not dataset:
-                messagebox.showinfo("No training data", "No labeled deed calls were found in the selected folder.", parent=self)
+                messagebox.showinfo("No training data", "No labeled deed calls were found in the selected folder.", parent=parent or self)
                 return
             model = train_deed_spacy_model(dataset, output_dir=self.deed_ai_model_path, logger=self._log)
             self.deed_ai_model = model
-            messagebox.showinfo("Training complete", f"Model trained with {len(dataset)} document(s).", parent=self)
+            messagebox.showinfo("Training complete", f"Model trained with {len(dataset)} document(s).", parent=parent or self)
             self._log("Deed AI model trained successfully.")
         except Exception as exc:
             self._log(f"AI training failed: {exc}")
-            messagebox.showerror("Training failed", str(exc), parent=self)
+            messagebox.showerror("Training failed", str(exc), parent=parent or self)
 
     def run_deed_ai_analysis(self):
         if spacy is None:
@@ -1839,11 +1848,11 @@ class App(BaseTk):
             self._log(f"AI analysis failed: {exc}")
             messagebox.showerror("Analysis failed", str(exc), parent=self)
 
-    def save_deed_ai_calls(self):
+    def save_deed_ai_calls(self, parent=None):
         if not self.deed_ai_last_results:
-            messagebox.showinfo("No results", "Run an AI analysis before saving calls.", parent=self)
+            messagebox.showinfo("No results", "Run an AI analysis before saving calls.", parent=parent or self)
             return
-        save_path = filedialog.asksaveasfilename(parent=self, title="Save AI deed calls", defaultextension=".csv", filetypes=[("CSV", "*.csv")])
+        save_path = filedialog.asksaveasfilename(parent=parent or self, title="Save AI deed calls", defaultextension=".csv", filetypes=[("CSV", "*.csv")])
         if not save_path:
             return
         try:
@@ -1853,10 +1862,10 @@ class App(BaseTk):
                 for text_value, (start, end) in self.deed_ai_last_results:
                     writer.writerow([text_value, start, end])
             self._log(f"AI deed calls saved → {save_path}")
-            messagebox.showinfo("Saved", f"AI deed calls exported to:\n{save_path}", parent=self)
+            messagebox.showinfo("Saved", f"AI deed calls exported to:\n{save_path}", parent=parent or self)
         except Exception as exc:
             self._log(f"Failed to save AI calls: {exc}")
-            messagebox.showerror("Save failed", str(exc), parent=self)
+            messagebox.showerror("Save failed", str(exc), parent=parent or self)
 
     def _update_ai_output(self, calls: List[Tuple[str, Tuple[int, int]]]):
         if not getattr(self, "ai_output_text", None):
@@ -2081,6 +2090,94 @@ class App(BaseTk):
         self._log("Deed text ready for QC. Review/edit before running call extraction.")
         if txt and txt.strip():
             self.highlight_calls_preview(quiet=True)
+
+
+    def ai_extract_text_and_calls(self):
+        if spacy is None:
+            messagebox.showerror("spaCy not available", "Install spaCy to run AI extraction.\nCommand: pip install spacy")
+            return
+        p = Path(self.pdf_var.get() or "")
+        if not p or not p.exists() or p.suffix.lower() != ".pdf":
+            messagebox.showerror("Missing or invalid PDF", "Please select a valid .pdf deed file before running AI extraction.")
+            return
+        model = self._get_or_load_deed_ai_model()
+        if model is None:
+            messagebox.showwarning("Model unavailable", "Train the AI model from Settings before running AI extraction.")
+            return
+        self._log(f"AI extract & parse → {p}")
+        tess_path = self.settings.get("tesseract_path")
+        if tess_path:
+            try_set_tesseract_cmd(tess_path)
+        try:
+            text_value = ocr_pdf_with_pytesseract(p, tesseract_path=tess_path, logger=self._log) or ""
+        except Exception as exc:
+            messagebox.showerror("AI extraction failed", str(exc))
+            self._log(f"AI extraction failed: {exc}")
+            return
+        if not text_value.strip():
+            messagebox.showwarning("No OCR text", "The AI extraction did not return any text for this PDF.")
+            self._log("AI extraction produced no text.")
+            return
+        if getattr(self, "deed_text", None):
+            self.deed_text.delete("1.0", "end")
+            self.deed_text.insert("1.0", text_value)
+        self.deed_pdf_path = p
+        self.manual_call_entries = []
+        self.deed_ai_last_results = []
+        try:
+            calls = extract_deed_calls_with_model(model, text_value)
+            self.deed_ai_last_results = calls
+        except Exception as exc:
+            messagebox.showerror("AI parsing failed", str(exc))
+            self._log(f"AI parsing failed: {exc}")
+            return
+        assumed_unit = self.settings.get("units_in", "feet")
+        ai_entries = []
+        for snippet, span in calls or []:
+            start, end = span
+            cleaned = clean_text_for_parsing(snippet)
+            try:
+                parsed = _parse_deed_text_entries(cleaned, assumed_unit)
+            except Exception:
+                parsed = []
+            added = False
+            for _, _, data in parsed:
+                if not isinstance(data, dict):
+                    continue
+                call_type = str(data.get("Type", "")).strip().title()
+                if call_type not in {"Line", "Curve"}:
+                    continue
+                normalized = dict(data)
+                if call_type == "Line" and normalized.get("Distance") not in (None, "") and not normalized.get("DistanceUnit"):
+                    normalized["DistanceUnit"] = assumed_unit
+                if call_type == "Curve":
+                    for unit_key, value_key in (("RadiusUnit", "Radius"), ("ArcUnit", "Arc Length"), ("ChordUnit", "Chord Length")):
+                        if normalized.get(value_key) not in (None, "") and not normalized.get(unit_key):
+                            normalized[unit_key] = assumed_unit
+                ai_entries.append({"start": max(0, start), "end": min(len(text_value), end), "type": call_type, "data": normalized})
+                added = True
+                break
+            if not added and snippet.strip():
+                self._log(f"AI call could not be categorized: {snippet[:80]}…")
+        if ai_entries:
+            ai_entries.sort(key=lambda item: item.get("start", 0))
+            self.manual_call_entries = ai_entries
+        if getattr(self, "deed_text", None):
+            self.deed_text.tag_remove("call_line", "1.0", "end")
+            self.deed_text.tag_remove("call_curve", "1.0", "end")
+        self._apply_manual_call_tags()
+        self.highlight_calls_preview(quiet=True)
+        if pandas is not None:
+            try:
+                self.extract_calls_from_text()
+            except Exception as exc:
+                self._log(f"AI call parsing error: {exc}")
+        else:
+            self._log("pandas not available; skipping call parsing after AI extraction.")
+        msg = f"AI extracted {len(ai_entries)} call(s)." if ai_entries else "AI extraction finished with no calls detected."
+        self._log(msg)
+        if not ai_entries:
+            messagebox.showinfo("No calls detected", "The AI model did not detect any deed calls in this PDF.")
 
     def clear_deed_text(self):
         if getattr(self, "deed_text", None):
@@ -3027,10 +3124,12 @@ class App(BaseTk):
         SettingsDialog(self, current_mode=self.settings["theme"], current_units_in=self.settings["units_in"],
                        current_units_out=self.settings["units_out"], current_bearing_fmt=self.settings["bearing_fmt"],
                        current_tesseract_path=self.settings["tesseract_path"], current_spcs=self.selected_spcs,
-                       on_apply=self.apply_settings)
-    def apply_settings(self, mode, units_in, units_out, bearing_fmt, tess_path):
+                       current_ai_dir=self.settings.get("ai_training_dir", ""), on_apply=self.apply_settings)
+    def apply_settings(self, mode, units_in, units_out, bearing_fmt, tess_path, ai_dir):
         previous = dict(self.settings)
-        self.settings.update({"theme":mode,"units_in":units_in,"units_out":units_out,"bearing_fmt":bearing_fmt,"tesseract_path":tess_path or ""})
+        self.settings.update({"theme": mode, "units_in": units_in, "units_out": units_out, "bearing_fmt": bearing_fmt, "tesseract_path": tess_path or "", "ai_training_dir": ai_dir or ""})
+        if hasattr(self, "ai_training_folder_var"):
+            self.ai_training_folder_var.set(ai_dir or "")
         if tess_path:
             ok = try_set_tesseract_cmd(tess_path)
             self._log("Tesseract path set." if ok else "Tesseract path invalid or not found.")
@@ -3055,7 +3154,8 @@ class App(BaseTk):
                 try: self.notebook.select(selected_tab)
                 except Exception: pass
         self._save_user_config()
-        self._log(f"Settings applied → Theme={mode}, Input Units={units_in}, Output Units={units_out}, Bearing Format={bearing_fmt}")
+        library_msg = ai_dir if ai_dir else "None"
+        self._log(f"Settings applied → Theme={mode}, Input Units={units_in}, Output Units={units_out}, Bearing Format={bearing_fmt}, AI Library={library_msg}")
     def convert(self):
         try:
             in_path = Path(self.in_var.get() or ""); out_path = Path(self.out_var.get() or "")
