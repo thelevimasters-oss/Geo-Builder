@@ -99,6 +99,46 @@ class ProcessResult:
     segments: List[ParcelSegment]
 
 
+def _scroll_units_from_event(event) -> int:
+    """Translate a Tkinter mouse wheel event into scroll units."""
+    delta = getattr(event, "delta", 0)
+    if delta:
+        if sys.platform == "darwin":
+            return -delta
+        return -1 if delta > 0 else 1
+    num = getattr(event, "num", None)
+    if num == 4:
+        return -1
+    if num == 5:
+        return 1
+    return 0
+
+
+def _bind_mousewheel_scroll(target, container=None, orient="vertical"):
+    """Enable mouse wheel scrolling for a widget and its descendants."""
+
+    def _on_mousewheel(event):
+        units = _scroll_units_from_event(event)
+        if not units:
+            return
+        if orient == "horizontal":
+            target.xview_scroll(units, "units")
+        else:
+            target.yview_scroll(units, "units")
+        return "break"
+
+    def _bind_recursive(widget):
+        try:
+            widget.bind("<MouseWheel>", _on_mousewheel, add="+")
+            widget.bind("<Button-4>", _on_mousewheel, add="+")
+            widget.bind("<Button-5>", _on_mousewheel, add="+")
+        except Exception:
+            return
+        for child in getattr(widget, "winfo_children", lambda: [])():
+            _bind_recursive(child)
+
+    _bind_recursive(container or target)
+
 SPCS_ZONES = {
     "Alabama East (EPSG:26929)": 26929,
     "Alabama West (EPSG:26930)": 26930,
@@ -1368,6 +1408,7 @@ class DetailsDialog(tk.Toplevel):
                             font=("Consolas",10), highlightthickness=1, highlightbackground=PANEL_BORDER)
         scroll = tk.Scrollbar(frame, command=self.text.yview); self.text.configure(yscrollcommand=scroll.set)
         self.text.pack(side="left", fill="both", expand=True); scroll.pack(side="right", fill="y")
+        _bind_mousewheel_scroll(self.text)
         btns = tk.Frame(self, bg=PANEL_DARK); btns.pack(fill="x", padx=12, pady=(2,12))
         tk.Button(btns, text="Copy Log", command=self.copy_log,
                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
@@ -1412,6 +1453,8 @@ class SettingsDialog(tk.Toplevel):
             canvas.itemconfigure(window_id, width=event.width)
         content.bind("<Configure>", _sync_scroll)
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window_id, width=e.width))
+        _bind_mousewheel_scroll(canvas)
+        _bind_mousewheel_scroll(canvas, content)
         tk.Label(content, text="Appearance", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(12,6))
         self.mode_var = tk.StringVar(value=current_mode)
         box = tk.Frame(content, bg=PANEL_DARK)
@@ -1855,6 +1898,7 @@ class App(BaseTk):
         text_scroll = tk.Scrollbar(text_frame, orient="vertical", command=self.deed_text.yview)
         text_scroll.pack(side="right", fill="y")
         self.deed_text.configure(yscrollcommand=text_scroll.set)
+        _bind_mousewheel_scroll(self.deed_text)
         self._configure_call_highlight_tags()
         info_msg = ("Extract the deed PDF to populate the text above.\n"
                     "Review and edit as needed before running call extraction from the next tab.")
@@ -2014,6 +2058,7 @@ class App(BaseTk):
         self.grid = EditableGrid(grid_frame, columns=cols, on_edit_commit=self._grid_edit_commit); self.grid.pack(fill="both", expand=True)
         vsb = tk.Scrollbar(grid_frame, orient="vertical", command=self.grid.yview); hsb = tk.Scrollbar(grid_frame, orient="horizontal", command=self.grid.xview)
         self.grid.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set); vsb.pack(side="right", fill="y"); hsb.pack(side="bottom", fill="x")
+        _bind_mousewheel_scroll(self.grid)
         self._configure_grid_tags()
         if pandas is None: self._log("pandas not installed — PDF parsing and Excel saving will be disabled until installed (pip install pandas).")
         if openpyxl is None: self._log("openpyxl not installed — saving Excel will be disabled (pip install openpyxl).")
@@ -2114,6 +2159,7 @@ class App(BaseTk):
         pts_scroll = tk.Scrollbar(points_container, orient="vertical", command=self.points_tree.yview)
         self.points_tree.configure(yscrollcommand=pts_scroll.set)
         pts_scroll.pack(side="right", fill="y")
+        _bind_mousewheel_scroll(self.points_tree, points_container)
 
         preview_frame = tk.Frame(geom_wrapper, bg=PANEL_DARK)
         preview_frame.pack(side="left", fill="both", expand=True, padx=(18,0))
