@@ -1,6 +1,6 @@
 # Geo-Builder
 
-Geo-Builder is a desktop companion for Bentley OpenRoads Designer users who need to build XML geometry files from spreadsheet data. The tool ships as a single Python application that can be launched with a themed Tk GUI or invoked from the command line for unattended conversions.
+Geo-Builder is a desktop companion for PlotConjurer AI users who need to build XML geometry files from spreadsheet data. The tool ships as a single Python application that can be launched with a themed Tk GUI or invoked from the command line for unattended conversions.
 
 ## Features
 
