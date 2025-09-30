@@ -28,6 +28,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+TESSERACT_ENV_VARS = (
+    "GEO_BUILDER_TESSERACT",
+    "TESSERACT_PATH",
+    "TESSERACT_CMD",
+    "TESSERACT_EXE",
+)
+
 # ---------------------- THEME / BRAND ----------------------
 GPI_GREEN  = "#0F3320"
 GPI_GREY   = "#A2AAAD"
@@ -975,10 +982,24 @@ def ocr_pdf_with_pytesseract(pdf_path: Path, dpi: int = 300, tesseract_path: Opt
     """
     if pytesseract is None:
         raise RuntimeError("OCR requires pytesseract. Install with: pip install pytesseract pillow")
+    env_source = None
+    chosen_path = tesseract_path
+    if not chosen_path:
+        for env_name in TESSERACT_ENV_VARS:
+            env_value = os.environ.get(env_name)
+            if env_value:
+                chosen_path = env_value
+                env_source = env_name
+                break
+
+    tesseract_path = chosen_path
+
     invalid_custom_path = False
-    if tesseract_path:
-        if not try_set_tesseract_cmd(tesseract_path, logger=logger):
+    if chosen_path:
+        if not try_set_tesseract_cmd(chosen_path, logger=logger):
             invalid_custom_path = True
+        elif env_source and logger:
+            logger(f"Tesseract path resolved from environment variable {env_source}.")
     current_cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
     normalized_cmd = _normalize_tesseract_path(current_cmd)
     if normalized_cmd and normalized_cmd.exists() and _looks_like_tesseract_binary(normalized_cmd):
@@ -1995,8 +2016,54 @@ class App(BaseTk):
         self.deed_ai_model_path = Path(__file__).with_name("deed_ner_model")
         self.deed_ai_last_results: List[Tuple[str, Tuple[int, int]]] = []
         self.ai_output_text = None
+        self._bootstrap_tesseract()
         self.withdraw(); self.after(10, lambda: Splash(self, duration_ms=1100, on_done=self._after_splash))
     def _after_splash(self): self.deiconify(); self._build_ui()
+    def _bootstrap_tesseract(self):
+        if pytesseract is None:
+            return
+        sources: List[Tuple[str, str]] = []
+        saved_path = (self.settings.get("tesseract_path") or "").strip()
+        if saved_path:
+            sources.append(("saved settings", saved_path))
+        for env_name in TESSERACT_ENV_VARS:
+            env_value = os.environ.get(env_name)
+            if env_value:
+                sources.append((f"environment variable {env_name}", env_value))
+        for label, raw in sources:
+            if not raw:
+                continue
+            normalized = _normalize_tesseract_path(raw)
+            if normalized is None:
+                cleaned = _expand_and_clean_path(raw)
+                if not cleaned:
+                    continue
+                normalized = Path(cleaned)
+            candidate = str(normalized)
+            if try_set_tesseract_cmd(candidate, logger=self._log):
+                cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
+                resolved = _normalize_tesseract_path(cmd) if cmd else None
+                if resolved and resolved.exists():
+                    path_str = str(resolved)
+                    self.settings["tesseract_path"] = path_str
+                    self._save_user_config()
+                    self._log(f"Tesseract configured from {label}: {path_str}")
+                else:
+                    self._log(f"Tesseract configured from {label}.")
+                return
+            else:
+                self._log(f"{label.capitalize()} did not point to a working Tesseract executable.")
+        if try_set_tesseract_cmd(logger=self._log):
+            cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
+            resolved = _normalize_tesseract_path(cmd) if cmd else None
+            if resolved and resolved.exists():
+                self.settings["tesseract_path"] = str(resolved)
+                self._save_user_config()
+                self._log(f"Tesseract auto-detected at: {resolved}")
+            else:
+                self._log("Tesseract auto-detected.")
+        else:
+            self._log("Tesseract not found automatically. Set the path from Settings if OCR is needed.")
     def _build_ui(self):
         for w in list(self.winfo_children()):
             if isinstance(w, tk.Toplevel): continue
