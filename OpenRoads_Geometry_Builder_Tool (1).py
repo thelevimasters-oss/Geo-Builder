@@ -747,87 +747,187 @@ def _looks_like_tesseract_binary(path: Path) -> bool:
     name = path.name.lower()
     if "pytesseract" in name:
         return False
-    return name.startswith("tesseract")
+    if not name:
+        return False
+    if name.endswith(".dll") or name.endswith(".py"):
+        return False
+    return "tesseract" in name
+
+
+def _expand_and_clean_path(value: Any) -> str:
+    if value in (None, ""):
+        return ""
+    cleaned = str(value).strip().strip('"').strip("'")
+    if not cleaned:
+        return ""
+    expanded = os.path.expandvars(os.path.expanduser(cleaned))
+    return expanded.strip()
+
+
+def _search_for_tesseract_nearby(path: Path) -> Optional[Path]:
+    """Try to locate a real tesseract.exe near a provided path (common Windows pitfall)."""
+    if not path:
+        return None
+    candidates: List[Path] = []
+    parents_to_check = []
+    try:
+        parents_to_check.append(path if path.is_dir() else path.parent)
+    except Exception:
+        parents_to_check.append(path)
+    try:
+        if path.parent:
+            parents_to_check.append(path.parent)
+    except Exception:
+        pass
+    try:
+        if path.parent and path.parent.parent:
+            parents_to_check.append(path.parent.parent)
+    except Exception:
+        pass
+    for base in parents_to_check:
+        if not base:
+            continue
+        # Direct file names next to the provided path (for portable installs)
+        for name in ("tesseract.exe", "tesseract"):
+            candidate = base / name
+            if candidate.exists():
+                candidates.append(candidate)
+        # Look for "Tesseract-OCR" sub-directories.
+        subdir = base / "Tesseract-OCR"
+        for name in ("tesseract.exe", "tesseract"):
+            candidate = subdir / name
+            if candidate.exists():
+                candidates.append(candidate)
+    # Common Windows installation directories if the nearby search failed.
+    env_dirs = []
+    for env_name in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
+        env_value = os.environ.get(env_name)
+        if not env_value:
+            continue
+        env_path = Path(env_value)
+        tesseract_dir = env_path / "Tesseract-OCR"
+        if tesseract_dir.exists():
+            env_dirs.append(tesseract_dir)
+    for directory in env_dirs:
+        for name in ("tesseract.exe", "tesseract"):
+            candidate = directory / name
+            if candidate.exists():
+                candidates.append(candidate)
+    for candidate in candidates:
+        if candidate.exists() and _looks_like_tesseract_binary(candidate):
+            return candidate
+    return None
 
 
 def _normalize_tesseract_path(value: str) -> Optional[Path]:
     """Return a sanitized Path for a tesseract binary candidate."""
-    if not value:
-        return None
-    if isinstance(value, (str, bytes)):
-        cleaned = str(value).strip().strip('"').strip("'")
-    else:
-        cleaned = str(value)
+    cleaned = _expand_and_clean_path(value)
     if not cleaned:
         return None
     candidate = Path(cleaned)
+    if candidate.suffix.lower() == ".lnk":
+        # Windows shortcut — best effort attempt to resolve by asking PowerShell.
+        try:
+            escaped = str(candidate).replace("'", "''")
+            resolved = subprocess.check_output([
+                "powershell", "-NoProfile", "-Command",
+                f"(New-Object -COM WScript.Shell).CreateShortcut('{escaped}').TargetPath"
+            ], stderr=subprocess.DEVNULL, text=True).strip()
+        except Exception:
+            resolved = ""
+        if resolved:
+            candidate = Path(_expand_and_clean_path(resolved))
     if candidate.is_dir():
-        # Allow users to provide the installation folder instead of the exe name
-        names = ["tesseract.exe", "tesseract"]
-        for name in names:
+        # Allow users to provide the installation folder instead of the exe name.
+        for name in ("tesseract.exe", "tesseract"):
             exe_candidate = candidate / name
             if exe_candidate.exists():
                 return exe_candidate
+    if not candidate.exists():
+        # Fall back to PATH lookup (handles values like "tesseract").
+        found = shutil.which(str(candidate))
+        if found:
+            candidate = Path(found)
     if "pytesseract" in candidate.name.lower():
         # Users frequently point to the pytesseract console script shipped with the Python
-        # package. That wrapper cannot perform OCR on its own and leads to cryptic errors.
-        # Treat it as invalid and prefer an auto-detected binary instead.
-        siblings = [candidate.with_name("tesseract.exe"), candidate.with_name("tesseract")]
-        for sibling in siblings:
-            if sibling.exists():
-                return sibling
+        # package. Attempt to locate the real binary near that script.
+        sibling = _search_for_tesseract_nearby(candidate)
+        if sibling is not None:
+            return sibling
         return None
-    return candidate
+    return candidate if candidate.exists() else None
 
 
-def try_set_tesseract_cmd(custom_path: str = None):
+def _verify_tesseract_command(candidate: Path) -> bool:
+    """Ensure the configured Tesseract binary launches successfully."""
+    if pytesseract is None:
+        return False
+    try:
+        version = pytesseract.get_tesseract_version()
+    except Exception:
+        return False
+    return bool(str(version).strip())
+
+
+def try_set_tesseract_cmd(custom_path: str = None, logger=None):
     if pytesseract is None:
         return False
 
-    candidate_paths: List[Path] = []
-    auto_candidates: List[Path] = []
-
+    raw_candidates: List[str] = []
     if custom_path:
-        normalized = _normalize_tesseract_path(custom_path)
-        if normalized:
-            candidate_paths.append(normalized)
+        raw_candidates.append(custom_path)
 
     auto_path = shutil.which("tesseract") or shutil.which("tesseract.exe")
     if auto_path:
-        auto_candidates.append(Path(auto_path))
-    auto_candidates.extend([
-        Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
-        Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
+        raw_candidates.append(auto_path)
+
+    raw_candidates.extend([
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
     ])
+
     if sys.platform.startswith("win"):
         local_appdata = os.environ.get("LOCALAPPDATA")
         if local_appdata:
-            auto_candidates.append(Path(local_appdata) / "Programs" / "Tesseract-OCR" / "tesseract.exe")
-        # Some installations (portable builds) live next to the Python Scripts folder.
+            raw_candidates.append(str(Path(local_appdata) / "Programs" / "Tesseract-OCR" / "tesseract.exe"))
         try:
             scripts_dir = Path(sys.executable).resolve().parent
-            auto_candidates.append(scripts_dir / "tesseract.exe")
+            raw_candidates.append(str(scripts_dir / "tesseract.exe"))
         except Exception:
             pass
 
-    seen = {path.resolve() for path in candidate_paths if path}
-    for auto_candidate in auto_candidates:
+    seen: set = set()
+    evaluated: List[Path] = []
+    for raw in raw_candidates:
+        normalized = _normalize_tesseract_path(raw)
+        if not normalized:
+            continue
         try:
-            resolved = auto_candidate.resolve()
+            resolved = normalized.resolve()
         except Exception:
-            resolved = auto_candidate
-        if resolved not in seen:
-            candidate_paths.append(auto_candidate)
-            seen.add(resolved)
+            resolved = normalized
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        evaluated.append(normalized)
 
-    for candidate in candidate_paths:
-        if candidate and candidate.exists() and _looks_like_tesseract_binary(candidate):
-            pytesseract.pytesseract.tesseract_cmd = str(candidate)
+    for candidate in evaluated:
+        if not candidate.exists() or not _looks_like_tesseract_binary(candidate):
+            continue
+        pytesseract.pytesseract.tesseract_cmd = str(candidate)
+        if _verify_tesseract_command(candidate):
             return True
+        if logger:
+            logger(f"Tesseract at {candidate} could not be executed. Trying next candidate…")
 
     cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "")
     cmd_path = _normalize_tesseract_path(cmd) if cmd else None
-    return bool(cmd_path and cmd_path.exists() and _looks_like_tesseract_binary(cmd_path))
+    if cmd_path and cmd_path.exists() and _looks_like_tesseract_binary(cmd_path):
+        if _verify_tesseract_command(cmd_path):
+            return True
+        if logger:
+            logger(f"Existing Tesseract command {cmd_path} failed to run.")
+    return False
 
 def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
     text = ""
@@ -877,7 +977,7 @@ def ocr_pdf_with_pytesseract(pdf_path: Path, dpi: int = 300, tesseract_path: Opt
         raise RuntimeError("OCR requires pytesseract. Install with: pip install pytesseract pillow")
     invalid_custom_path = False
     if tesseract_path:
-        if not try_set_tesseract_cmd(tesseract_path):
+        if not try_set_tesseract_cmd(tesseract_path, logger=logger):
             invalid_custom_path = True
     current_cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
     normalized_cmd = _normalize_tesseract_path(current_cmd)
@@ -890,13 +990,14 @@ def ocr_pdf_with_pytesseract(pdf_path: Path, dpi: int = 300, tesseract_path: Opt
                 logger("Provided path points to pytesseract.exe; please select the real tesseract.exe from the Tesseract-OCR installation.")
             elif tesseract_path:
                 logger(f"Tesseract executable not found at: {tesseract_path}")
-        if not try_set_tesseract_cmd():
+        if not try_set_tesseract_cmd(logger=logger):
             auto_cmd = shutil.which("tesseract") or shutil.which("tesseract.exe")
             if auto_cmd:
                 pytesseract.pytesseract.tesseract_cmd = auto_cmd
     cmd_path = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
     normalized_cmd = _normalize_tesseract_path(cmd_path)
-    if not (normalized_cmd and normalized_cmd.exists() and _looks_like_tesseract_binary(normalized_cmd)):
+    if not (normalized_cmd and normalized_cmd.exists() and _looks_like_tesseract_binary(normalized_cmd)
+            and _verify_tesseract_command(normalized_cmd)):
         if logger:
             logger("Tesseract executable is not configured. Set the path in Settings before running OCR.")
         raise RuntimeError("Tesseract executable is not configured. Set the path in Settings before running OCR.")
@@ -2335,10 +2436,10 @@ class App(BaseTk):
             self.pb_deed["value"] = 10
         self._log(f"Extracting text from: {p}")
         if self.settings.get("tesseract_path"):
-            if try_set_tesseract_cmd(self.settings["tesseract_path"]): logger(f"Tesseract path set: {self.settings['tesseract_path']}")
+            if try_set_tesseract_cmd(self.settings["tesseract_path"], logger=logger): logger(f"Tesseract path set: {self.settings['tesseract_path']}")
             else: logger("Provided Tesseract path invalid; OCR may be skipped.")
         else:
-            if try_set_tesseract_cmd(): logger("Tesseract auto-detected.")
+            if try_set_tesseract_cmd(logger=logger): logger("Tesseract auto-detected.")
             else: logger("Tesseract not found; OCR will be used only if installed/auto-detected.")
         try:
             txt = extract_text_from_pdf(p, logger=logger) or ""
@@ -2390,7 +2491,7 @@ class App(BaseTk):
             progress.update_idletasks()
         tess_path = self.settings.get("tesseract_path")
         if tess_path:
-            try_set_tesseract_cmd(tess_path)
+            try_set_tesseract_cmd(tess_path, logger=self._log)
         try:
             text_value = ocr_pdf_with_pytesseract(
                 p,
@@ -3434,7 +3535,7 @@ class App(BaseTk):
         if hasattr(self, "ai_training_folder_var"):
             self.ai_training_folder_var.set(ai_dir or "")
         if tess_path:
-            ok = try_set_tesseract_cmd(tess_path)
+            ok = try_set_tesseract_cmd(tess_path, logger=self._log)
             self._log("Tesseract path set." if ok else "Tesseract path invalid or not found.")
         elif previous.get("tesseract_path"):
             # Path cleared
