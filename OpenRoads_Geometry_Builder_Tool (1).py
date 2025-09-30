@@ -1424,6 +1424,10 @@ class SettingsDialog(tk.Toplevel):
                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
                   relief="flat", padx=10, pady=5, cursor="hand2").pack(side="left", padx=6)
+        tk.Button(content, text="Training Library Guide", command=self._show_training_info,
+                  bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
+                  fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
+                  relief="flat", padx=10, pady=6, cursor="hand2").pack(anchor="w", padx=14, pady=(0,8))
         ai_btns = tk.Frame(content, bg=PANEL_DARK)
         ai_btns.pack(fill="x", padx=14, pady=(0,10))
         tk.Button(ai_btns, text="Train Model", command=self._train_ai_model,
@@ -1462,6 +1466,21 @@ class SettingsDialog(tk.Toplevel):
 
     def _export_ai_calls(self):
         self.master.save_deed_ai_calls(parent=self)
+
+    def _show_training_info(self):
+        info = (
+            "Training library structure:\n"
+            " • Store deed PDF files (*.pdf) directly in the selected folder.\n"
+            " • Provide a labeled Excel workbook for each PDF using the same base name\n"
+            "   (example.pdf → example_correct.xlsx or example.xlsx).\n"
+            " • The Excel file must include a 'Deed_Call_Text' column containing the text\n"
+            "   of each call and a 'Start_End' column with start,end character positions\n"
+            "   (leave blank to auto-align).\n"
+            " • The tool OCRs each PDF to align annotations—set the Tesseract path if\n"
+            "   the PDFs are scans.\n"
+            " • Only documents with both PDF and labeled calls are used for training."
+        )
+        messagebox.showinfo("Training Library Requirements", info, parent=self)
 
     def _apply(self):
         self.on_apply(self.mode_var.get(), self.units_in_var.get(), self.units_out_var.get(),
