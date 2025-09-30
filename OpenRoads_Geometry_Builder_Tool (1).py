@@ -739,13 +739,36 @@ def convert_excel_to_xml_multi(input_xlsx: Path, output_xml: Path, logger=None,
     return {"sheets": len(sheets), "rows": rows, "lines": lines, "curves": curves}
 
 # ---------------------- PDF EXTRACTION & PARSING ----------------------
+def _normalize_tesseract_path(value: str) -> Optional[Path]:
+    """Return a sanitized Path for a tesseract binary candidate."""
+    if not value:
+        return None
+    if isinstance(value, (str, bytes)):
+        cleaned = str(value).strip().strip('"').strip("'")
+    else:
+        cleaned = str(value)
+    if not cleaned:
+        return None
+    candidate = Path(cleaned)
+    if candidate.is_dir():
+        # Allow users to provide the installation folder instead of the exe name
+        names = ["tesseract.exe", "tesseract"]
+        for name in names:
+            exe_candidate = candidate / name
+            if exe_candidate.exists():
+                return exe_candidate
+    return candidate
+
+
 def try_set_tesseract_cmd(custom_path: str = None):
     if pytesseract is None:
         return False
 
     candidate_paths: List[Path] = []
     if custom_path:
-        candidate_paths.append(Path(custom_path))
+        normalized = _normalize_tesseract_path(custom_path)
+        if normalized:
+            candidate_paths.append(normalized)
     else:
         auto_path = shutil.which("tesseract") or shutil.which("tesseract.exe")
         if auto_path:
@@ -785,26 +808,17 @@ def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
                 if logger: logger("Text extracted with PyMuPDF."); return text
         except Exception as e:
             if logger: logger(f"PyMuPDF text extraction failed: {e}")
-    if fitz is not None and pytesseract is not None:
+    if pytesseract is not None:
         try:
-            doc = fitz.open(str(pdf_path))
-            for p in doc:
-                pix = p.get_pixmap(dpi=300)
-                img_bytes = pix.tobytes("png")
-                if HAVE_PIL:
-                    image = Image.open(io.BytesIO(img_bytes))
-                    t = pytesseract.image_to_string(image)
-                else:
-                    t = pytesseract.image_to_string(Image.open(io.BytesIO(img_bytes)))
-                if t.strip(): text += t + "\n"
-            if text.strip():
-                if logger: logger("Text extracted via OCR (PyMuPDF + pytesseract)."); return text
+            if logger: logger("Attempting OCR fallback with pytesseract.")
+            ocr_text = ocr_pdf_with_pytesseract(pdf_path, tesseract_path=None, logger=logger)
+            if ocr_text.strip():
+                return ocr_text
         except Exception as e:
             if logger: logger(f"OCR fallback failed: {e}")
     else:
         if logger:
-            if fitz is None: logger("OCR skipped: PyMuPDF not available.")
-            if pytesseract is None: logger("OCR skipped: pytesseract not available.")
+            logger("OCR skipped: pytesseract not available.")
     return text
 
 
@@ -819,7 +833,21 @@ def ocr_pdf_with_pytesseract(pdf_path: Path, dpi: int = 300, tesseract_path: Opt
     if pytesseract is None:
         raise RuntimeError("OCR requires pytesseract. Install with: pip install pytesseract pillow")
     if tesseract_path:
-        try_set_tesseract_cmd(tesseract_path)
+        if not try_set_tesseract_cmd(tesseract_path):
+            raise RuntimeError(f"Tesseract executable not found at: {tesseract_path}")
+    current_cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
+    normalized_cmd = _normalize_tesseract_path(current_cmd)
+    if normalized_cmd and normalized_cmd.exists():
+        pytesseract.pytesseract.tesseract_cmd = str(normalized_cmd)
+    else:
+        auto_cmd = shutil.which(current_cmd) if current_cmd else None
+        if not auto_cmd:
+            auto_cmd = shutil.which("tesseract") or shutil.which("tesseract.exe")
+        if auto_cmd:
+            pytesseract.pytesseract.tesseract_cmd = auto_cmd
+    cmd_path = getattr(pytesseract.pytesseract, "tesseract_cmd", "")
+    if not cmd_path or not Path(cmd_path).exists():
+        raise RuntimeError("Tesseract executable is not configured. Set the path in Settings before running OCR.")
 
     last_pdf2image_error: Optional[Exception] = None
     total_pages: int = 0
