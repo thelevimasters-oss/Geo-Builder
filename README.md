@@ -34,7 +34,7 @@ Install any optional integrations you need, for example:
 pip install pillow pdfplumber pymupdf pytesseract tkinterdnd2
 ```
 
-If you plan to use OCR, install Tesseract from your platform's package manager and ensure `tesseract` is available on `PATH`.
+If you plan to use OCR, install Tesseract from your platform's package manager. The tool now auto-detects `tesseract` when it is on `PATH`, and you can still point to a custom binary from the settings dialog if needed.
 
 ## Usage
 
