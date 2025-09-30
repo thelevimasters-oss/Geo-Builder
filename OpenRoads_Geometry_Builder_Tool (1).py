@@ -22,7 +22,7 @@ This script is built to degrade gracefully if optional packages are missing:
 - Drag & drop: tkinterdnd2
 """
 
-import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess
+import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess, shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -740,12 +740,26 @@ def convert_excel_to_xml_multi(input_xlsx: Path, output_xml: Path, logger=None,
 
 # ---------------------- PDF EXTRACTION & PARSING ----------------------
 def try_set_tesseract_cmd(custom_path: str = None):
-    if pytesseract is None: return False
-    if custom_path and Path(custom_path).exists():
-        pytesseract.pytesseract.tesseract_cmd = str(custom_path); return True
-    for p in [r"C:\Program Files\Tesseract-OCR\tesseract.exe", r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"]:
-        if Path(p).exists():
-            pytesseract.pytesseract.tesseract_cmd = p; return True
+    if pytesseract is None:
+        return False
+
+    candidate_paths: List[Path] = []
+    if custom_path:
+        candidate_paths.append(Path(custom_path))
+    else:
+        auto_path = shutil.which("tesseract") or shutil.which("tesseract.exe")
+        if auto_path:
+            candidate_paths.append(Path(auto_path))
+        candidate_paths.extend([
+            Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
+            Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
+        ])
+
+    for candidate in candidate_paths:
+        if candidate.exists():
+            pytesseract.pytesseract.tesseract_cmd = str(candidate)
+            return True
+
     cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "")
     return Path(cmd).exists() if cmd else False
 
