@@ -17,7 +17,7 @@ Geo-Builder is a desktop companion for Bentley OpenRoads Designer users who need
 - Optional libraries that enhance the experience:
   - `Pillow` – display bundled icons and images.
   - `pdfplumber` or `PyMuPDF` (`fitz`) – extract text from deed PDFs.
-  - `pytesseract` + Tesseract binary – OCR fallback for scanned PDFs.
+  - `pytesseract` + Tesseract binary – OCR fallback for scanned PDFs. Set `GEO_BUILDER_TESSERACT`, `TESSERACT_PATH`, `TESSERACT_CMD`, or `TESSERACT_EXE` to point at the executable if it is not on `PATH`.
   - `tkinterdnd2` – drag-and-drop file input in the GUI.
 
 ## Installation
