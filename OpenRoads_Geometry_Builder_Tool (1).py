@@ -22,7 +22,7 @@ This script is built to degrade gracefully if optional packages are missing:
 - Drag & drop: tkinterdnd2
 """
 
-import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv
+import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -242,11 +242,28 @@ def convert_value_units(val: float, from_unit: str, to_unit: str) -> float:
     return ft * FEET_TO_UNIT[to_unit]
 
 # ---------------------- SAFE IMPORTS ----------------------
-def _try_import(modname):
+_DEPENDENCY_CACHE: Dict[str, Optional[Any]] = {}
+
+
+def _try_import(modname: str, pip_name: Optional[str] = None) -> Optional[Any]:
+    if modname in _DEPENDENCY_CACHE:
+        return _DEPENDENCY_CACHE[modname]
     try:
-        return __import__(modname)
+        module = importlib.import_module(modname)
+        _DEPENDENCY_CACHE[modname] = module
+        return module
     except Exception:
-        return None
+        pip_pkg = pip_name or modname
+        try:
+            print(f"[dependency] Installing {pip_pkg} …")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", pip_pkg])
+            module = importlib.import_module(modname)
+            _DEPENDENCY_CACHE[modname] = module
+            return module
+        except Exception as exc:
+            print(f"[dependency] Failed to install {pip_pkg}: {exc}")
+            _DEPENDENCY_CACHE[modname] = None
+            return None
 
 """Install optional AI dependencies with:
     pip install spacy pdf2image pytesseract pillow pandas openpyxl
@@ -255,7 +272,7 @@ def _try_import(modname):
 pandas      = _try_import("pandas")
 openpyxl    = _try_import("openpyxl")
 pdfplumber  = _try_import("pdfplumber")
-fitz        = _try_import("fitz")  # PyMuPDF
+fitz        = _try_import("fitz", "pymupdf")  # PyMuPDF
 pytesseract = _try_import("pytesseract")
 ezdxf       = _try_import("ezdxf")
 pyproj      = _try_import("pyproj")
@@ -268,6 +285,34 @@ if spacy is not None:
         Example = None
 else:
     Example = None
+
+
+def ensure_spacy_model(model_name: str = "en_core_web_sm") -> bool:
+    if spacy is None:
+        return False
+    model_name = str(model_name)
+    model_path = Path(model_name)
+    if model_path.exists():
+        try:
+            spacy.load(model_name)
+            return True
+        except Exception as exc:
+            print(f"[dependency] Failed to load spaCy model at {model_path}: {exc}")
+            return False
+    try:
+        spacy.load(model_name)
+        return True
+    except OSError:
+        try:
+            print(f"[dependency] Downloading spaCy model {model_name} …")
+            subprocess.check_call([sys.executable, "-m", "spacy", "download", model_name])
+            spacy.load(model_name)
+            return True
+        except Exception as exc:
+            print(f"[dependency] Failed to download spaCy model {model_name}: {exc}")
+            return False
+    except Exception:
+        return False
 
 if ezdxf is not None:
     try:
@@ -289,6 +334,7 @@ except Exception:
 HAVE_EZDXF = ezdxf is not None
 HAVE_PYPROJ = pyproj is not None
 
+_try_import("PIL", "Pillow")
 try:
     from PIL import Image, ImageTk
     HAVE_PIL = True
@@ -299,10 +345,13 @@ except Exception:
 import tkinter as tk
 from tkinter import filedialog, messagebox
 from tkinter import ttk
-try:
-    from tkinterdnd2 import DND_FILES, TkinterDnD
-    DND_AVAILABLE = True
-except Exception:
+if _try_import("tkinterdnd2") is not None:
+    try:
+        from tkinterdnd2 import DND_FILES, TkinterDnD
+        DND_AVAILABLE = True
+    except Exception:
+        DND_AVAILABLE = False
+else:
     DND_AVAILABLE = False
 
 from xml.etree.ElementTree import Element, SubElement, ElementTree
@@ -843,7 +892,10 @@ def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
         raise ValueError("No training data provided for model training.")
     try:
         if base_model:
-            nlp = spacy.load(base_model)
+            if ensure_spacy_model(base_model):
+                nlp = spacy.load(base_model)
+            else:
+                raise OSError
         else:
             raise OSError
     except Exception:
@@ -1801,7 +1853,7 @@ class App(BaseTk):
 
     def train_deed_ai_model(self, parent=None):
         if spacy is None:
-            messagebox.showerror("spaCy not available", "Install spaCy to train the AI model.\nCommand: pip install spacy", parent=parent or self)
+            messagebox.showerror("spaCy not available", "spaCy is required for AI training and could not be installed automatically.\nInstall manually with: pip install spacy", parent=parent or self)
             return
         folder_path = Path(self.ai_training_folder_var.get() or "")
         if not folder_path.exists():
@@ -1822,7 +1874,7 @@ class App(BaseTk):
 
     def run_deed_ai_analysis(self):
         if spacy is None:
-            messagebox.showerror("spaCy not available", "Install spaCy to analyze deeds.\nCommand: pip install spacy", parent=self)
+            messagebox.showerror("spaCy not available", "spaCy is required for deed analysis and could not be installed automatically.\nInstall manually with: pip install spacy", parent=self)
             return
         model = self._get_or_load_deed_ai_model()
         if model is None:
@@ -1891,10 +1943,14 @@ class App(BaseTk):
                 return self.deed_ai_model
             except Exception as exc:
                 self._log(f"Failed to load saved model: {exc}")
-        try:
-            self.deed_ai_model = spacy.load("en_core_web_sm")
-            self._log("Loaded spaCy en_core_web_sm model as fallback.")
-        except Exception:
+        if ensure_spacy_model():
+            try:
+                self.deed_ai_model = spacy.load("en_core_web_sm")
+                self._log("Loaded spaCy en_core_web_sm model as fallback.")
+            except Exception as exc:
+                self._log(f"Failed to load en_core_web_sm: {exc}")
+                self.deed_ai_model = None
+        if self.deed_ai_model is None:
             self.deed_ai_model = spacy.blank("en")
             if self.deed_ai_model is not None:
                 self._log("Initialized blank spaCy English model. Training is recommended before analysis.")
@@ -2094,7 +2150,7 @@ class App(BaseTk):
 
     def ai_extract_text_and_calls(self):
         if spacy is None:
-            messagebox.showerror("spaCy not available", "Install spaCy to run AI extraction.\nCommand: pip install spacy")
+            messagebox.showerror("spaCy not available", "spaCy is required for AI extraction and could not be installed automatically.\nInstall manually with: pip install spacy")
             return
         p = Path(self.pdf_var.get() or "")
         if not p or not p.exists() or p.suffix.lower() != ".pdf":
