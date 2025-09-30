@@ -22,7 +22,7 @@ This script is built to degrade gracefully if optional packages are missing:
 - Drag & drop: tkinterdnd2
 """
 
-import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser
+import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -248,6 +248,10 @@ def _try_import(modname):
     except Exception:
         return None
 
+"""Install optional AI dependencies with:
+    pip install spacy pdf2image pytesseract pillow pandas openpyxl
+"""
+
 pandas      = _try_import("pandas")
 openpyxl    = _try_import("openpyxl")
 pdfplumber  = _try_import("pdfplumber")
@@ -255,6 +259,15 @@ fitz        = _try_import("fitz")  # PyMuPDF
 pytesseract = _try_import("pytesseract")
 ezdxf       = _try_import("ezdxf")
 pyproj      = _try_import("pyproj")
+spacy       = _try_import("spacy")
+pdf2image   = _try_import("pdf2image")
+if spacy is not None:
+    try:
+        from spacy.training import Example
+    except Exception:
+        Example = None
+else:
+    Example = None
 
 if ezdxf is not None:
     try:
@@ -690,6 +703,205 @@ def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
             if fitz is None: logger("OCR skipped: PyMuPDF not available.")
             if pytesseract is None: logger("OCR skipped: pytesseract not available.")
     return text
+
+
+def ocr_pdf_with_pytesseract(pdf_path: Path, dpi: int = 300, tesseract_path: Optional[str] = None,
+                             logger=None) -> str:
+    """OCR a scanned deed PDF to text using pdf2image and pytesseract."""
+    if pdf2image is None or pytesseract is None:
+        raise RuntimeError("OCR requires pdf2image and pytesseract. Install with: pip install pdf2image pytesseract pillow")
+    if tesseract_path:
+        try_set_tesseract_cmd(tesseract_path)
+    images = pdf2image.convert_from_path(str(pdf_path), dpi=dpi)
+    text_blocks: List[str] = []
+    for page_number, image in enumerate(images, start=1):
+        try:
+            page_text = pytesseract.image_to_string(image)
+            if page_text:
+                text_blocks.append(page_text)
+                if logger:
+                    logger(f"OCR page {page_number}: {len(page_text.strip())} characters")
+        except Exception as exc:
+            if logger:
+                logger(f"OCR failed on page {page_number}: {exc}")
+    return "\n".join(block.strip() for block in text_blocks if block).strip()
+
+
+def _parse_start_end(value) -> Optional[Tuple[int, int]]:
+    if value in (None, ""):
+        return None
+    if pandas is not None:
+        try:
+            if pandas.isna(value):
+                return None
+        except Exception:
+            pass
+    if isinstance(value, (list, tuple)) and len(value) >= 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            return None
+    if isinstance(value, str):
+        nums = [int(n) for n in re.findall(r"-?\d+", value)]
+        if len(nums) >= 2:
+            return nums[0], nums[1]
+    return None
+
+
+def _find_span_in_text(text: str, snippet: str, used_ranges: List[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+    if not snippet:
+        return None
+    lower_text = text.lower()
+    lower_snippet = snippet.lower()
+    search_start = 0
+    while True:
+        idx = lower_text.find(lower_snippet, search_start)
+        if idx == -1:
+            return None
+        start, end = idx, idx + len(snippet)
+        overlap = False
+        for used_start, used_end in used_ranges:
+            if start < used_end and end > used_start:
+                overlap = True
+                break
+        if not overlap:
+            return start, end
+        search_start = idx + len(lower_snippet)
+
+
+def load_deed_training_dataset(library_folder: Path, tesseract_path: Optional[str] = None, logger=None) -> List[Tuple[str, Dict[str, Any]]]:
+    """Load OCR text and labeled deed call spans from a training library folder."""
+    if pandas is None:
+        raise RuntimeError("pandas is required to read labeled Excel files. Install with: pip install pandas openpyxl")
+    dataset: List[Tuple[str, Dict[str, Any]]] = []
+    pdf_paths = sorted(library_folder.glob("*.pdf"))
+    if not pdf_paths:
+        if logger:
+            logger("No PDF files found in training folder.")
+        return dataset
+    for pdf_path in pdf_paths:
+        excel_path = None
+        stem = pdf_path.stem
+        for candidate in [library_folder / f"{stem}_correct.xlsx", library_folder / f"{stem}.xlsx"]:
+            if candidate.exists():
+                excel_path = candidate
+                break
+        if excel_path is None:
+            if logger:
+                logger(f"Skipping {pdf_path.name}: matching Excel file not found.")
+            continue
+        if logger:
+            logger(f"OCR → {pdf_path.name}")
+        text = ocr_pdf_with_pytesseract(pdf_path, tesseract_path=tesseract_path, logger=logger)
+        if not text:
+            if logger:
+                logger(f"No OCR text produced for {pdf_path.name}; skipping.")
+            continue
+        try:
+            df = pandas.read_excel(excel_path, engine="openpyxl")
+        except Exception as exc:
+            if logger:
+                logger(f"Failed to read {excel_path.name}: {exc}")
+            continue
+        entities: List[Tuple[int, int, str]] = []
+        used_ranges: List[Tuple[int, int]] = []
+        for _, row in df.iterrows():
+            call_text = str(row.get("Deed_Call_Text", "")).strip()
+            if not call_text:
+                continue
+            start_end = _parse_start_end(row.get("Start_End"))
+            if start_end is None:
+                start_end = _find_span_in_text(text, call_text, used_ranges)
+            if start_end is None:
+                if logger:
+                    snippet = call_text[:60] + ("…" if len(call_text) > 60 else "")
+                    logger(f"Could not align call '{snippet}' in OCR text; skipping annotation.")
+                continue
+            start, end = start_end
+            if start < 0 or end > len(text) or start >= end:
+                continue
+            used_ranges.append((start, end))
+            entities.append((start, end, "DEED_CALL"))
+        if not entities:
+            if logger:
+                logger(f"No valid annotations produced for {pdf_path.name}; skipping document.")
+            continue
+        dataset.append((text, {"entities": entities}))
+        if logger:
+            logger(f"Prepared {len(entities)} labeled call(s) from {pdf_path.name}.")
+    return dataset
+
+
+def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
+                           output_dir: Optional[Path] = None,
+                           base_model: str = "en_core_web_sm",
+                           logger=None):
+    """Train or fine-tune a spaCy NER model for deed calls."""
+    if spacy is None or Example is None:
+        raise RuntimeError("spaCy with training support is required. Install with: pip install spacy")
+    if not dataset:
+        raise ValueError("No training data provided for model training.")
+    try:
+        if base_model:
+            nlp = spacy.load(base_model)
+        else:
+            raise OSError
+    except Exception:
+        nlp = spacy.blank("en")
+        if logger:
+            logger("Falling back to blank English spaCy model.")
+    if "ner" not in nlp.pipe_names:
+        ner = nlp.add_pipe("ner")
+    else:
+        ner = nlp.get_pipe("ner")
+    if "DEED_CALL" not in ner.labels:
+        ner.add_label("DEED_CALL")
+
+    examples: List[Example] = []
+    for text, annotations in dataset:
+        doc = nlp.make_doc(text)
+        spans = []
+        for start, end, label in annotations.get("entities", []):
+            span = doc.char_span(start, end, label=label)
+            if span is not None:
+                spans.append(span)
+        if not spans:
+            continue
+        formatted = {"entities": [(span.start_char, span.end_char, span.label_) for span in spans]}
+        examples.append(Example.from_dict(doc, formatted))
+    if not examples:
+        raise ValueError("Training data did not produce any valid spaCy examples.")
+
+    other_pipes = [p for p in nlp.pipe_names if p != "ner"]
+    with nlp.disable_pipes(*other_pipes):
+        optimizer = nlp.initialize(lambda: examples)
+        epochs = 10
+        for epoch in range(epochs):
+            random.shuffle(examples)
+            losses = {}
+            for batch in spacy.util.minibatch(examples, size=2):
+                nlp.update(batch, drop=0.2, sgd=optimizer, losses=losses)
+            if logger:
+                loss_val = losses.get("ner", 0.0)
+                logger(f"Epoch {epoch + 1}/{epochs} → NER loss={loss_val:.4f}")
+
+    if output_dir:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        nlp.to_disk(output_dir)
+        if logger:
+            logger(f"Model saved to {output_dir}")
+    return nlp
+
+
+def extract_deed_calls_with_model(nlp_model, text: str) -> List[Tuple[str, Tuple[int, int]]]:
+    if nlp_model is None or not text:
+        return []
+    doc = nlp_model(text)
+    calls: List[Tuple[str, Tuple[int, int]]] = []
+    for ent in doc.ents:
+        if ent.label_ == "DEED_CALL":
+            calls.append((ent.text.strip(), (ent.start_char, ent.end_char)))
+    return calls
 
 _CHAR_NORMALIZE_MAP = {
     "′": "'",
@@ -1336,7 +1548,8 @@ class App(BaseTk):
                          "origin_easting":self._user_config.get("origin_easting","0.0"),
                          "origin_northing":self._user_config.get("origin_northing","0.0"),
                          "source_epsg":self._user_config.get("source_epsg",""),
-                         "apply_pyproj":self._user_config.get("apply_pyproj","false").lower() == "true"}
+                         "apply_pyproj":self._user_config.get("apply_pyproj","false").lower() == "true",
+                         "ai_training_dir":self._user_config.get("ai_training_dir", "")}
         self.selected_spcs = self.settings.get("spcs_name") or ""
         self.selected_spcs_epsg = self.settings.get("spcs_epsg")
         self.deed_df = pandas.DataFrame() if pandas else None
@@ -1357,6 +1570,11 @@ class App(BaseTk):
         self.canvas = None
         self.ax = None
         self.figure = None
+        self.ai_training_folder_var = tk.StringVar(value=self.settings.get("ai_training_dir", ""))
+        self.deed_ai_model = None
+        self.deed_ai_model_path = Path(__file__).with_name("deed_ner_model")
+        self.deed_ai_last_results: List[Tuple[str, Tuple[int, int]]] = []
+        self.ai_output_text = None
         self.withdraw(); self.after(10, lambda: Splash(self, duration_ms=1100, on_done=self._after_splash))
     def _after_splash(self): self.deiconify(); self._build_ui()
     def _build_ui(self):
@@ -1506,6 +1724,182 @@ class App(BaseTk):
         info_msg = ("Extract the deed PDF to populate the text above.\n"
                     "Review and edit as needed before running call extraction from the next tab.")
         tk.Label(parent, text=info_msg, justify="left", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(anchor="w", padx=16, pady=(0,12))
+        self._build_deed_ai_panel(parent)
+
+    def _build_deed_ai_panel(self, parent):
+        separator = tk.Frame(parent, bg=PANEL_BORDER, height=2)
+        separator.pack(fill="x", padx=16, pady=(8, 16))
+        header = tk.Label(parent, text="AI Deed Call Review", bg=PANEL_DARK, fg=TEXT_LIGHT,
+                          font=("Segoe UI", 11, "bold"))
+        header.pack(anchor="w", padx=16)
+        desc = ("Train a spaCy model on labeled deed calls, then analyze new scanned deeds."
+                " OCR uses pdf2image and pytesseract to extract text before entity recognition.")
+        tk.Label(parent, text=desc, wraplength=760, justify="left", bg=PANEL_DARK,
+                 fg=TEXT_SOFT, font=("Segoe UI", 9)).pack(anchor="w", padx=16, pady=(4, 10))
+
+        folder_row = tk.Frame(parent, bg=PANEL_DARK)
+        folder_row.pack(fill="x", padx=16, pady=(0, 8))
+        tk.Label(folder_row, text="Training Library", bg=PANEL_DARK, fg=TEXT_LIGHT,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", side="left")
+
+        path_row = tk.Frame(parent, bg=PANEL_DARK)
+        path_row.pack(fill="x", padx=16, pady=(0, 10))
+        entry = tk.Entry(path_row, textvariable=self.ai_training_folder_var, font=("Segoe UI", 10),
+                         bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
+                         relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER)
+        entry.pack(side="left", fill="x", expand=True)
+        browse_btn = self._secondary_button(path_row, "Select Folder", self.select_ai_training_folder)
+        browse_btn.pack(side="left", padx=(10, 0))
+        self._bind_hint(entry, "Choose a folder with deed PDFs and labeled Excel files")
+        self._bind_hint(browse_btn, "Browse for the deed AI training folder")
+
+        action_row = tk.Frame(parent, bg=PANEL_DARK)
+        action_row.pack(fill="x", padx=16, pady=(0, 10))
+        train_btn = self._cta_button(action_row, "Train Model")
+        train_btn.configure(command=self.train_deed_ai_model)
+        train_btn.pack(side="left")
+        analyze_btn = self._secondary_button(action_row, "Analyze Deed", self.run_deed_ai_analysis)
+        analyze_btn.pack(side="left", padx=(10, 0))
+        save_btn = self._secondary_button(action_row, "Save Calls…", self.save_deed_ai_calls)
+        save_btn.pack(side="left", padx=(10, 0))
+        self._bind_hint(train_btn, "Train or retrain the spaCy model with the selected library")
+        self._bind_hint(analyze_btn, "Select a deed PDF and extract deed calls using the AI model")
+        self._bind_hint(save_btn, "Export the latest AI calls to CSV")
+
+        output_frame = tk.Frame(parent, bg=PANEL_DARK)
+        output_frame.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+        tk.Label(output_frame, text="Extracted Calls", bg=PANEL_DARK, fg=TEXT_LIGHT,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        text_frame = tk.Frame(output_frame, bg=PANEL_DARK)
+        text_frame.pack(fill="both", expand=True, pady=(4, 0))
+        self.ai_output_text = tk.Text(text_frame, wrap="word", font=("Consolas", 10), height=10,
+                                      bg=CONSOLE_BG, fg=TEXT_LIGHT, relief="flat",
+                                      highlightthickness=1, highlightbackground=PANEL_BORDER)
+        self.ai_output_text.pack(side="left", fill="both", expand=True)
+        scroll = tk.Scrollbar(text_frame, orient="vertical", command=self.ai_output_text.yview)
+        scroll.pack(side="right", fill="y")
+        self.ai_output_text.configure(yscrollcommand=scroll.set, state="disabled")
+        self._update_ai_output(self.deed_ai_last_results)
+
+    def select_ai_training_folder(self):
+        folder = filedialog.askdirectory(parent=self, title="Select Deed AI Training Folder")
+        if not folder:
+            return
+        self.ai_training_folder_var.set(folder)
+        self.settings["ai_training_dir"] = folder
+        self._save_user_config()
+        self._log(f"AI training folder set → {folder}")
+
+    def train_deed_ai_model(self):
+        if spacy is None:
+            messagebox.showerror("spaCy not available", "Install spaCy to train the AI model.\nCommand: pip install spacy", parent=self)
+            return
+        folder_path = Path(self.ai_training_folder_var.get() or "")
+        if not folder_path.exists():
+            messagebox.showwarning("Training folder missing", "Select a training folder that contains deed PDFs and labeled Excel files.", parent=self)
+            return
+        try:
+            dataset = load_deed_training_dataset(folder_path, tesseract_path=self.settings.get("tesseract_path"), logger=self._log)
+            if not dataset:
+                messagebox.showinfo("No training data", "No labeled deed calls were found in the selected folder.", parent=self)
+                return
+            model = train_deed_spacy_model(dataset, output_dir=self.deed_ai_model_path, logger=self._log)
+            self.deed_ai_model = model
+            messagebox.showinfo("Training complete", f"Model trained with {len(dataset)} document(s).", parent=self)
+            self._log("Deed AI model trained successfully.")
+        except Exception as exc:
+            self._log(f"AI training failed: {exc}")
+            messagebox.showerror("Training failed", str(exc), parent=self)
+
+    def run_deed_ai_analysis(self):
+        if spacy is None:
+            messagebox.showerror("spaCy not available", "Install spaCy to analyze deeds.\nCommand: pip install spacy", parent=self)
+            return
+        model = self._get_or_load_deed_ai_model()
+        if model is None:
+            messagebox.showwarning("Model unavailable", "Train the AI model or install spaCy's en_core_web_sm package.", parent=self)
+            return
+        pdf_path = filedialog.askopenfilename(parent=self, title="Select deed PDF for AI analysis", filetypes=[("PDF", "*.pdf"), ("All files", "*.*")])
+        if not pdf_path:
+            return
+        pdf_path_obj = Path(pdf_path)
+        try:
+            text = ocr_pdf_with_pytesseract(pdf_path_obj, tesseract_path=self.settings.get("tesseract_path"), logger=self._log)
+            if not text:
+                messagebox.showwarning("No OCR text", "OCR did not return any text for this PDF.", parent=self)
+                return
+            calls = extract_deed_calls_with_model(model, text)
+            self.deed_ai_last_results = calls
+            self._update_ai_output(calls)
+            if calls:
+                self._log(f"AI extracted {len(calls)} deed call(s) from {pdf_path_obj.name}.")
+            else:
+                self._log(f"AI found no deed calls in {pdf_path_obj.name}.")
+        except Exception as exc:
+            self._log(f"AI analysis failed: {exc}")
+            messagebox.showerror("Analysis failed", str(exc), parent=self)
+
+    def save_deed_ai_calls(self):
+        if not self.deed_ai_last_results:
+            messagebox.showinfo("No results", "Run an AI analysis before saving calls.", parent=self)
+            return
+        save_path = filedialog.asksaveasfilename(parent=self, title="Save AI deed calls", defaultextension=".csv", filetypes=[("CSV", "*.csv")])
+        if not save_path:
+            return
+        try:
+            with open(save_path, "w", newline="", encoding="utf-8") as fh:
+                writer = csv.writer(fh)
+                writer.writerow(["Deed_Call_Text", "Start_Index", "End_Index"])
+                for text_value, (start, end) in self.deed_ai_last_results:
+                    writer.writerow([text_value, start, end])
+            self._log(f"AI deed calls saved → {save_path}")
+            messagebox.showinfo("Saved", f"AI deed calls exported to:\n{save_path}", parent=self)
+        except Exception as exc:
+            self._log(f"Failed to save AI calls: {exc}")
+            messagebox.showerror("Save failed", str(exc), parent=self)
+
+    def _update_ai_output(self, calls: List[Tuple[str, Tuple[int, int]]]):
+        if not getattr(self, "ai_output_text", None):
+            return
+        self.ai_output_text.configure(state="normal")
+        self.ai_output_text.delete("1.0", "end")
+        if not calls:
+            self.ai_output_text.insert("end", "No deed calls extracted yet. Train and analyze to see results.\n")
+        else:
+            for idx, (text_value, (start, end)) in enumerate(calls, start=1):
+                self.ai_output_text.insert("end", f"{idx}. {text_value}\n    (start: {start}, end: {end})\n\n")
+        self.ai_output_text.configure(state="disabled")
+
+    def _get_or_load_deed_ai_model(self):
+        if spacy is None:
+            return None
+        if self.deed_ai_model is not None:
+            return self.deed_ai_model
+        if self.deed_ai_model_path.exists():
+            try:
+                self.deed_ai_model = spacy.load(self.deed_ai_model_path)
+                self._log("Loaded saved deed AI model.")
+                return self.deed_ai_model
+            except Exception as exc:
+                self._log(f"Failed to load saved model: {exc}")
+        try:
+            self.deed_ai_model = spacy.load("en_core_web_sm")
+            self._log("Loaded spaCy en_core_web_sm model as fallback.")
+        except Exception:
+            self.deed_ai_model = spacy.blank("en")
+            if self.deed_ai_model is not None:
+                self._log("Initialized blank spaCy English model. Training is recommended before analysis.")
+        if self.deed_ai_model is not None:
+            if "ner" not in self.deed_ai_model.pipe_names:
+                ner = self.deed_ai_model.add_pipe("ner")
+            else:
+                ner = self.deed_ai_model.get_pipe("ner")
+            if "DEED_CALL" not in getattr(ner, "labels", []):
+                try:
+                    ner.add_label("DEED_CALL")
+                except Exception:
+                    pass
+        return self.deed_ai_model
 
     def _build_call_tab(self, parent):
         tk.Label(parent, text="Call Extraction", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(16,6))
@@ -2757,6 +3151,7 @@ class App(BaseTk):
             "origin_northing": self.origin_northing_var.get(),
             "source_epsg": self.source_epsg_var.get(),
             "apply_pyproj": str(bool(self.apply_pyproj_var.get())).lower(),
+            "ai_training_dir": self.ai_training_folder_var.get() if hasattr(self, "ai_training_folder_var") else "",
         })
         try:
             with self.config_path.open("w", encoding="utf-8") as fh:
