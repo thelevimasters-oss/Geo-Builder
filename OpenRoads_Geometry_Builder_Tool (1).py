@@ -326,6 +326,7 @@ ezdxf       = _try_import("ezdxf")
 pyproj      = _try_import("pyproj")
 spacy       = _try_import("spacy")
 pdf2image   = _try_import("pdf2image")
+matplotlib  = _try_import("matplotlib")
 if spacy is not None:
     try:
         from spacy.training import Example
@@ -370,11 +371,28 @@ if ezdxf is not None:
 else:
     dxf_const = None
 
-try:
-    from matplotlib.figure import Figure
-    from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
-    HAVE_MPL = True
-except Exception:
+if matplotlib is not None:
+    try:
+        current_backend = ""
+        if hasattr(matplotlib, "get_backend"):
+            try:
+                current_backend = (matplotlib.get_backend() or "").lower()
+            except Exception:
+                current_backend = ""
+        if "tkagg" not in current_backend:
+            try:
+                matplotlib.use("TkAgg")
+            except Exception as exc:
+                print(f"[dependency] Unable to set matplotlib backend to TkAgg: {exc}")
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+        HAVE_MPL = True
+    except Exception as exc:
+        print(f"[dependency] Matplotlib installed but unusable: {exc}")
+        Figure = None
+        FigureCanvasTkAgg = None
+        HAVE_MPL = False
+else:
     Figure = None
     FigureCanvasTkAgg = None
     HAVE_MPL = False
@@ -2492,7 +2510,7 @@ class App(BaseTk):
             self.canvas = FigureCanvasTkAgg(self.figure, master=preview_frame)
             self.canvas.get_tk_widget().pack(fill="both", expand=True)
         else:
-            msg = "Install matplotlib for live parcel previews."
+            msg = "Matplotlib unavailable; live parcel previews are disabled."
             tk.Label(preview_frame, text=msg, bg=PANEL_DARK, fg=TEXT_SOFT,
                      font=("Segoe UI",9), justify="left", wraplength=300).pack(fill="both", expand=True)
     # Deed actions & helpers
