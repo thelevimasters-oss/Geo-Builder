@@ -2155,6 +2155,58 @@ class App(BaseTk):
         self.out_entry.pack(side="left", fill="x", expand=True)
         btn_out = self._secondary_button(out_row, "Save as…", self.browse_out); btn_out.pack(side="left", padx=(8,0))
         self._bind_hint(self.out_entry, "Choose where to save the XML"); self._bind_hint(btn_out, "Pick an output path for the XML")
+
+        tk.Label(parent, text="Point of Beginning (absolute)", bg=PANEL_DARK, fg=TEXT_LIGHT,
+                 font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(12,4))
+        pob_frame = tk.Frame(parent, bg=PANEL_DARK)
+        pob_frame.pack(fill="x", padx=16)
+        tk.Label(pob_frame, text="Easting / X", bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9)).grid(row=0, column=0, sticky="w")
+        e_entry = tk.Entry(pob_frame, textvariable=self.origin_easting_var,
+                           bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
+                           relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER, width=16)
+        e_entry.grid(row=1, column=0, sticky="we", pady=(0,4))
+        self._bind_hint(e_entry, "Absolute easting/X for the parcel point of beginning.")
+
+        tk.Label(pob_frame, text="Northing / Y", bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9)).grid(row=0, column=1, sticky="w", padx=(12,0))
+        n_entry = tk.Entry(pob_frame, textvariable=self.origin_northing_var,
+                           bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
+                           relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER, width=16)
+        n_entry.grid(row=1, column=1, sticky="we", padx=(12,0), pady=(0,4))
+        self._bind_hint(n_entry, "Absolute northing/Y for the parcel point of beginning.")
+
+        pob_frame.columnconfigure(0, weight=1)
+        pob_frame.columnconfigure(1, weight=1)
+
+        tk.Label(parent, text="Coordinate Metadata", bg=PANEL_DARK, fg=TEXT_LIGHT,
+                 font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(10,4))
+        coord_frame = tk.Frame(parent, bg=PANEL_DARK)
+        coord_frame.pack(fill="x", padx=16)
+        tk.Label(coord_frame, text="State Plane (set in Settings)", bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9)).grid(row=0, column=0, sticky="w")
+        self.spcs_value_lbl = tk.Label(coord_frame, text=self.selected_spcs or "None",
+                                       bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",9),
+                                       wraplength=260, justify="left")
+        self.spcs_value_lbl.grid(row=0, column=1, sticky="w", padx=(6,0))
+
+        tk.Label(coord_frame, text="Source EPSG (optional)", bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9)).grid(row=1, column=0, sticky="w", pady=(8,0))
+        epsg_entry = tk.Entry(coord_frame, textvariable=self.source_epsg_var, width=18,
+                              bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
+                              relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER)
+        epsg_entry.grid(row=1, column=1, sticky="w", padx=(6,0), pady=(8,0))
+        self._bind_hint(epsg_entry, "EPSG of current working coordinates for optional pyproj transform.")
+
+        transform_chk = tk.Checkbutton(coord_frame, text="Transform with pyproj when exporting",
+                                       variable=self.apply_pyproj_var,
+                                       bg=PANEL_DARK, fg=TEXT_LIGHT, selectcolor=PANEL_DARK,
+                                       activebackground=PANEL_DARK, activeforeground=TEXT_LIGHT,
+                                       state="normal" if HAVE_PYPROJ else "disabled")
+        transform_chk.grid(row=2, column=0, columnspan=2, sticky="w", pady=(6,0))
+        if not HAVE_PYPROJ:
+            self._bind_hint(transform_chk, "Install pyproj to enable coordinate transformations.")
+
         info = ("Input requirements & notes:\n"
                 "  • Each Excel sheet becomes a separate geometry named after the sheet.\n"
                 "  • Columns per row:\n"
@@ -2389,62 +2441,11 @@ class App(BaseTk):
         control_frame = tk.Frame(geom_wrapper, bg=PANEL_DARK)
         control_frame.pack(side="left", fill="y")
 
-        pob_lbl = tk.Label(control_frame, text="Point of Beginning (absolute)",
-                           bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold"))
-        pob_lbl.pack(anchor="w", pady=(0,4))
-        pob_frame = tk.Frame(control_frame, bg=PANEL_DARK)
-        pob_frame.pack(anchor="w", fill="x")
-        tk.Label(pob_frame, text="Easting / X", bg=PANEL_DARK, fg=TEXT_SOFT,
-                 font=("Segoe UI",9)).grid(row=0, column=0, sticky="w")
-        e_entry = tk.Entry(pob_frame, textvariable=self.origin_easting_var,
-                           bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
-                           relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER, width=14)
-        e_entry.grid(row=1, column=0, sticky="we", pady=(0,4))
-        self._bind_hint(e_entry, "Absolute easting/X for the parcel point of beginning.")
-
-        tk.Label(pob_frame, text="Northing / Y", bg=PANEL_DARK, fg=TEXT_SOFT,
-                 font=("Segoe UI",9)).grid(row=0, column=1, sticky="w", padx=(12,0))
-        n_entry = tk.Entry(pob_frame, textvariable=self.origin_northing_var,
-                           bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
-                           relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER, width=14)
-        n_entry.grid(row=1, column=1, sticky="we", padx=(12,0), pady=(0,4))
-        self._bind_hint(n_entry, "Absolute northing/Y for the parcel point of beginning.")
-
-        pob_frame.columnconfigure(0, weight=1)
-        pob_frame.columnconfigure(1, weight=1)
-
-        spcs_frame = tk.Frame(control_frame, bg=PANEL_DARK)
-        spcs_frame.pack(anchor="w", fill="x", pady=(8,4))
-        tk.Label(spcs_frame, text="State Plane Coordinate System", bg=PANEL_DARK,
-                 fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).grid(row=0, column=0, columnspan=2, sticky="w")
-        tk.Label(spcs_frame, text="Selected:", bg=PANEL_DARK, fg=TEXT_SOFT,
-                 font=("Segoe UI",9)).grid(row=1, column=0, sticky="w")
-        self.spcs_value_lbl = tk.Label(spcs_frame, text=self.selected_spcs or "None", bg=PANEL_DARK,
-                                       fg=TEXT_LIGHT, font=("Segoe UI",9), wraplength=220, justify="left")
-        self.spcs_value_lbl.grid(row=1, column=1, sticky="w", padx=(6,0))
-        choose_btn = self._secondary_button(spcs_frame, "Choose…", self.open_spcs_dialog)
-        choose_btn.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4,0))
-        self._bind_hint(choose_btn, "Pick a State Plane zone for DXF metadata.")
-
-        tk.Label(spcs_frame, text="Source EPSG (optional)", bg=PANEL_DARK, fg=TEXT_SOFT,
-                 font=("Segoe UI",9)).grid(row=3, column=0, sticky="w", pady=(8,0))
-        epsg_entry = tk.Entry(spcs_frame, textvariable=self.source_epsg_var, width=16,
-                              bg=CONSOLE_BG, fg=TEXT_LIGHT, insertbackground=TEXT_LIGHT,
-                              relief="flat", highlightthickness=1, highlightbackground=PANEL_BORDER)
-        epsg_entry.grid(row=3, column=1, sticky="w", padx=(6,0), pady=(8,0))
-        self._bind_hint(epsg_entry, "EPSG of current working coordinates for optional pyproj transform.")
-
-        transform_chk = tk.Checkbutton(spcs_frame, text="Transform with pyproj when exporting",
-                                       variable=self.apply_pyproj_var,
-                                       bg=PANEL_DARK, fg=TEXT_LIGHT, selectcolor=PANEL_DARK,
-                                       activebackground=PANEL_DARK, activeforeground=TEXT_LIGHT,
-                                       state="normal" if HAVE_PYPROJ else "disabled")
-        transform_chk.grid(row=4, column=0, columnspan=2, sticky="w", pady=(6,0))
-        if not HAVE_PYPROJ:
-            self._bind_hint(transform_chk, "Install pyproj to enable coordinate transformations.")
+        tk.Label(control_frame, text="Geometry Actions", bg=PANEL_DARK,
+                 fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", pady=(0,4))
 
         btn_frame = tk.Frame(control_frame, bg=PANEL_DARK)
-        btn_frame.pack(fill="x", pady=(10,6))
+        btn_frame.pack(fill="x", pady=(0,6))
         process_btn = self._cta_button(btn_frame, "Process Geometry")
         process_btn.pack(side="left")
         process_btn.configure(command=self.process_deed_geometry)
