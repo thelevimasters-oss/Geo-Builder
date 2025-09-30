@@ -739,6 +739,16 @@ def convert_excel_to_xml_multi(input_xlsx: Path, output_xml: Path, logger=None,
     return {"sheets": len(sheets), "rows": rows, "lines": lines, "curves": curves}
 
 # ---------------------- PDF EXTRACTION & PARSING ----------------------
+def _looks_like_tesseract_binary(path: Path) -> bool:
+    """Heuristically determine whether *path* points to a real Tesseract binary."""
+    if not path or path.is_dir():
+        return False
+    name = path.name.lower()
+    if "pytesseract" in name:
+        return False
+    return name.startswith("tesseract")
+
+
 def _normalize_tesseract_path(value: str) -> Optional[Path]:
     """Return a sanitized Path for a tesseract binary candidate."""
     if not value:
@@ -757,6 +767,15 @@ def _normalize_tesseract_path(value: str) -> Optional[Path]:
             exe_candidate = candidate / name
             if exe_candidate.exists():
                 return exe_candidate
+    if "pytesseract" in candidate.name.lower():
+        # Users frequently point to the pytesseract console script shipped with the Python
+        # package. That wrapper cannot perform OCR on its own and leads to cryptic errors.
+        # Treat it as invalid and prefer an auto-detected binary instead.
+        siblings = [candidate.with_name("tesseract.exe"), candidate.with_name("tesseract")]
+        for sibling in siblings:
+            if sibling.exists():
+                return sibling
+        return None
     return candidate
 
 
@@ -765,26 +784,39 @@ def try_set_tesseract_cmd(custom_path: str = None):
         return False
 
     candidate_paths: List[Path] = []
+    auto_candidates: List[Path] = []
+
     if custom_path:
         normalized = _normalize_tesseract_path(custom_path)
         if normalized:
             candidate_paths.append(normalized)
-    else:
-        auto_path = shutil.which("tesseract") or shutil.which("tesseract.exe")
-        if auto_path:
-            candidate_paths.append(Path(auto_path))
-        candidate_paths.extend([
-            Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
-            Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
-        ])
+
+    auto_path = shutil.which("tesseract") or shutil.which("tesseract.exe")
+    if auto_path:
+        auto_candidates.append(Path(auto_path))
+    auto_candidates.extend([
+        Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
+        Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
+    ])
+
+    seen = {path.resolve() for path in candidate_paths if path}
+    for auto_candidate in auto_candidates:
+        try:
+            resolved = auto_candidate.resolve()
+        except Exception:
+            resolved = auto_candidate
+        if resolved not in seen:
+            candidate_paths.append(auto_candidate)
+            seen.add(resolved)
 
     for candidate in candidate_paths:
-        if candidate.exists():
+        if candidate and candidate.exists() and _looks_like_tesseract_binary(candidate):
             pytesseract.pytesseract.tesseract_cmd = str(candidate)
             return True
 
     cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "")
-    return Path(cmd).exists() if cmd else False
+    cmd_path = _normalize_tesseract_path(cmd) if cmd else None
+    return bool(cmd_path and cmd_path.exists() and _looks_like_tesseract_binary(cmd_path))
 
 def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
     text = ""
