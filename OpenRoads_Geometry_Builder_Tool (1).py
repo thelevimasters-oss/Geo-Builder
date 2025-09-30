@@ -336,12 +336,13 @@ pandas      = _try_import("pandas")
 openpyxl    = _try_import("openpyxl")
 pdfplumber  = _try_import("pdfplumber")
 fitz        = _try_import("fitz", "pymupdf")  # PyMuPDF
-pytesseract = _try_import("pytesseract")
-ezdxf       = _try_import("ezdxf")
-pyproj      = _try_import("pyproj")
-spacy       = _try_import("spacy")
-pdf2image   = _try_import("pdf2image")
-matplotlib  = _try_import("matplotlib")
+pytesseract        = _try_import("pytesseract")
+ezdxf              = _try_import("ezdxf")
+pyproj             = _try_import("pyproj")
+spacy              = _try_import("spacy")
+pdf2image          = _try_import("pdf2image")
+matplotlib         = _try_import("matplotlib")
+spacy_lookups_data = _try_import("spacy_lookups_data", "spacy-lookups-data")
 if spacy is not None:
     try:
         from spacy.training import Example
@@ -371,6 +372,9 @@ def ensure_spacy_lexeme_norm(nlp, logger=None):
     """Ensure that spaCy has the lexeme_norm lookup table available."""
     if spacy is None or nlp is None:
         return
+    def _log(message):
+        if logger:
+            logger(message)
     try:
         lookups = getattr(nlp.vocab, "lookups", None)
     except Exception:
@@ -379,18 +383,27 @@ def ensure_spacy_lexeme_norm(nlp, logger=None):
         return
 
     loaded_from_package = False
+    global spacy_lookups_data
+    if spacy_lookups_data is None:
+        try:
+            print("[dependency] Installing spacy-lookups-data …")
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "spacy-lookups-data"])
+            spacy_lookups_data = importlib.import_module("spacy_lookups_data")
+            _DEPENDENCY_CACHE["spacy_lookups_data"] = spacy_lookups_data
+            _log("Installed spacy-lookups-data package.")
+        except Exception as exc:
+            _log(f"spaCy lookup data unavailable ({exc}). Using fallback lexeme_norm table.")
     try:
-        from spacy_lookups_data import load_lookups  # type: ignore
-
-        lookups = load_lookups(lang=getattr(nlp, "lang", "en"))
-        if _has_lookup_table(lookups, "lexeme_norm"):
-            nlp.vocab.lookups = lookups
-            loaded_from_package = True
-            if logger:
-                logger("Loaded lexeme_norm lookup table from spacy-lookups-data.")
+        if spacy_lookups_data is not None:
+            load_lookups = getattr(spacy_lookups_data, "load_lookups", None)
+            if callable(load_lookups):
+                lookups = load_lookups(lang=getattr(nlp, "lang", "en"))
+                if _has_lookup_table(lookups, "lexeme_norm"):
+                    nlp.vocab.lookups = lookups
+                    loaded_from_package = True
+                    _log("Loaded lexeme_norm lookup table from spacy-lookups-data.")
     except Exception as exc:
-        if logger:
-            logger(f"spaCy lookup data unavailable ({exc}). Using fallback lexeme_norm table.")
+        _log(f"spaCy lookup data unavailable ({exc}). Using fallback lexeme_norm table.")
 
     if loaded_from_package:
         return
@@ -418,6 +431,37 @@ def ensure_spacy_lexeme_norm(nlp, logger=None):
             pass
     elif logger:
         logger("Unable to import spaCy Lookups class for fallback lexeme_norm table.")
+
+
+def ensure_startup_dependencies(logger=None):
+    def _log(message):
+        if logger:
+            logger(message)
+
+    if spacy is None:
+        return
+
+    try:
+        model_ready = ensure_spacy_model()
+    except Exception as exc:
+        _log(f"Failed to ensure spaCy model: {exc}")
+        model_ready = False
+
+    nlp = None
+    if model_ready:
+        try:
+            nlp = spacy.load("en_core_web_sm")
+        except Exception as exc:
+            _log(f"Failed to load spaCy model en_core_web_sm: {exc}")
+    if nlp is None:
+        try:
+            nlp = spacy.blank("en")
+            _log("Falling back to blank spaCy English model for lexeme_norm setup.")
+        except Exception as exc:
+            _log(f"Unable to create blank spaCy model: {exc}")
+            return
+
+    ensure_spacy_lexeme_norm(nlp, logger=_log)
 
 
 def ensure_spacy_model(model_name: str = "en_core_web_sm") -> bool:
@@ -4540,6 +4584,8 @@ def _run_cli(argv):
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else list(argv)
+
+    ensure_startup_dependencies(logger=lambda msg: print(f"[dependency] {msg}"))
 
     if argv:
         try:
