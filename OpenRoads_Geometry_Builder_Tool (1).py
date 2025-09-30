@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PlotClonjurer AI — GPI Theme
+PlotClonjurer AI Theme
 
 ✓ Excel → XML (one Geometry per sheet; Geometry name = sheet name)
 ✓ Settings: Theme (dark/light), Input Units (feet/meters/rods/chains), Output Units (feet/meters), Bearing Format (DMS/Decimal)
@@ -36,9 +36,9 @@ TESSERACT_ENV_VARS = (
 )
 
 # ---------------------- THEME / BRAND ----------------------
-GPI_GREEN  = "#0F3320"
-GPI_GREY   = "#A2AAAD"
-GPI_HL     = "#84BD00"
+BRAND_PRIMARY   = "#0F3320"
+BRAND_NEUTRAL   = "#A2AAAD"
+BRAND_HIGHLIGHT = "#84BD00"
 
 THEME_MODE = "dark"  # default
 
@@ -46,7 +46,7 @@ def set_theme(mode: str):
     global THEME_MODE, BG_DARK, PANEL_DARK, PANEL_BORDER, TEXT_LIGHT, TEXT_SOFT, CONSOLE_BG, CONSOLE_FG, STATUS_BG, STATUS_FG
     THEME_MODE = "dark" if str(mode).lower() != "light" else "light"
     if THEME_MODE == "dark":
-        BG_DARK      = GPI_GREEN
+        BG_DARK      = BRAND_PRIMARY
         PANEL_DARK   = "#10271C"
         PANEL_BORDER = "#2A3F34"
         TEXT_LIGHT   = "#E8F0EB"
@@ -58,7 +58,7 @@ def set_theme(mode: str):
     else:
         BG_DARK      = "#F5F7F5"
         PANEL_DARK   = "#FFFFFF"
-        PANEL_BORDER = GPI_GREY
+        PANEL_BORDER = BRAND_NEUTRAL
         TEXT_LIGHT   = "#122016"
         TEXT_SOFT    = "#4A5B51"
         CONSOLE_BG   = "#F3F5F3"
@@ -67,6 +67,21 @@ def set_theme(mode: str):
         STATUS_FG    = "#1F2E22"
 
 set_theme(THEME_MODE)
+
+LOGO_CANDIDATES = (
+    "geobuilder-logo.png",
+    "geobuilder-logo.jpg",
+    "logo-768x768.png",
+    "logo-768x768.jpg",
+)
+
+
+def _find_logo_asset():
+    for name in LOGO_CANDIDATES:
+        candidate = Path(__file__).with_name(name)
+        if candidate.exists():
+            return candidate
+    return None
 
 # ---------------------- UNITS ----------------------
 UNIT_TO_FEET = {"feet":1.0,"meters":3.280839895013123,"rods":16.5,"chains":66.0}
@@ -1647,12 +1662,13 @@ class Splash(tk.Toplevel):
         card.pack(fill="both", expand=True, padx=14, pady=14)
         head = tk.Frame(card, bg=PANEL_DARK); head.pack(fill="x", padx=16, pady=(14,6))
         try:
-            logo_path = Path(__file__).with_name("GPI-768x768.jpg")
-            if HAVE_PIL and logo_path.exists():
+            logo_path = _find_logo_asset()
+            if HAVE_PIL and logo_path and logo_path.exists():
                 img = Image.open(logo_path).resize((44,44), Image.LANCZOS)
                 self._logo = ImageTk.PhotoImage(img)
                 tk.Label(head, image=self._logo, bg=PANEL_DARK).pack(side="left", padx=(0,12))
-        except Exception: pass
+        except Exception:
+            pass
         tk.Label(head, text="PlotClonjurer AI",
                  bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",14,"bold")).pack(side="left", anchor="w")
         tk.Label(card, text="Initializing…", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(anchor="w", padx=16, pady=(0,12))
@@ -1660,15 +1676,15 @@ class Splash(tk.Toplevel):
         try: self.style.theme_use("clam")
         except: pass
         trough = CONSOLE_BG if THEME_MODE=="dark" else "#E7ECE7"
-        self.style.configure("GPI.Horizontal.TProgressbar", troughcolor=trough, background=GPI_HL,
-                             bordercolor=PANEL_BORDER, lightcolor=GPI_HL, darkcolor=GPI_HL)
+        self.style.configure("App.Horizontal.TProgressbar", troughcolor=trough, background=BRAND_HIGHLIGHT,
+                             bordercolor=PANEL_BORDER, lightcolor=BRAND_HIGHLIGHT, darkcolor=BRAND_HIGHLIGHT)
         pb_frame = tk.Frame(card, bg=PANEL_DARK); pb_frame.pack(fill="x", padx=16, pady=(6,10))
         self.pb = ttk.Progressbar(pb_frame, orient="horizontal", mode="determinate", length=480,
-                                  style="GPI.Horizontal.TProgressbar")
+                                  style="App.Horizontal.TProgressbar")
         self.pb.pack(fill="x")
         self.percent_lbl = tk.Label(card, text="0%", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10))
         self.percent_lbl.pack(anchor="e", padx=16)
-        tk.Label(card, text="GPI • Excel → XML + Deed PDF parsing", bg=PANEL_DARK,
+        tk.Label(card, text="PlotClonjurer AI • Excel → XML + Deed PDF parsing", bg=PANEL_DARK,
                  fg=TEXT_SOFT, font=("Segoe UI",9)).pack(anchor="w", padx=16, pady=(6,12))
         self.after(60, self._animate)
     def _animate(self):
@@ -1706,7 +1722,7 @@ class DetailsDialog(tk.Toplevel):
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
                   relief="flat", padx=12, pady=6, cursor="hand2").pack(side="left", padx=6)
         tk.Button(btns, text="Close", command=self.destroy,
-                  bg=GPI_HL, fg=GPI_GREEN, relief="flat", padx=16, pady=6, cursor="hand2").pack(side="right")
+                  bg=BRAND_HIGHLIGHT, fg=BRAND_PRIMARY, relief="flat", padx=16, pady=6, cursor="hand2").pack(side="right")
         self.log(f"Started at {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     def log(self, msg:str):
         self.text.insert("end", msg+"\n"); self.text.see("end"); self.update_idletasks()
@@ -1813,7 +1829,7 @@ class SettingsDialog(tk.Toplevel):
         ai_btns = tk.Frame(content, bg=PANEL_DARK)
         ai_btns.pack(fill="x", padx=14, pady=(0,10))
         tk.Button(ai_btns, text="Train Model", command=self._train_ai_model,
-                  bg=GPI_HL, fg=GPI_GREEN, relief="flat", padx=14, pady=6, cursor="hand2").pack(side="left")
+                  bg=BRAND_HIGHLIGHT, fg=BRAND_PRIMARY, relief="flat", padx=14, pady=6, cursor="hand2").pack(side="left")
         tk.Button(ai_btns, text="Export Last Calls…", command=self._export_ai_calls,
                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
@@ -1825,7 +1841,7 @@ class SettingsDialog(tk.Toplevel):
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
                   relief="flat", padx=12, pady=6, cursor="hand2").pack(side="right")
         tk.Button(footer, text="Apply", command=self._apply,
-                  bg=GPI_HL, fg=GPI_GREEN, relief="flat", padx=16, pady=6, cursor="hand2").pack(side="right", padx=6)
+                  bg=BRAND_HIGHLIGHT, fg=BRAND_PRIMARY, relief="flat", padx=16, pady=6, cursor="hand2").pack(side="right", padx=6)
     def _browse_tess(self):
         p = filedialog.askopenfilename(title="Select tesseract.exe", filetypes=[("tesseract.exe","tesseract.exe"),("All files","*.*")])
         if not p: return
@@ -1908,7 +1924,7 @@ def _coerce_value_for_column(col_name: str, val: str):
 
 
 class EditableGrid(ttk.Treeview):
-    STYLE_NAME = "GPI.EditableGrid.Treeview"
+    STYLE_NAME = "App.EditableGrid.Treeview"
 
     def __init__(self, parent, columns, on_edit_commit, **kwargs):
         style = ttk.Style()
@@ -1925,7 +1941,7 @@ class EditableGrid(ttk.Treeview):
             )
             style.map(
                 self.STYLE_NAME,
-                background=[("selected", GPI_HL)],
+                background=[("selected", BRAND_HIGHLIGHT)],
                 foreground=[("selected", fg_selected)],
             )
         except Exception:
@@ -1985,14 +2001,16 @@ class App(BaseTk):
                 tk.Tk.__init__(self)
             else:
                 raise
-        self.title("PlotClonjurer AI — GPI")
+        self.title("PlotClonjurer AI")
         self.geometry("1260x820"); self.minsize(1140,760); self.configure(bg=BG_DARK)
         try:
-            icon_path = Path(__file__).with_name("GPI-768x768.jpg")
-            if HAVE_PIL and icon_path.exists():
+            icon_path = _find_logo_asset()
+            if HAVE_PIL and icon_path and icon_path.exists():
                 img = Image.open(icon_path).resize((32,32), Image.LANCZOS)
-                self._icon_img = ImageTk.PhotoImage(img); self.iconphoto(True, self._icon_img)
-        except Exception: pass
+                self._icon_img = ImageTk.PhotoImage(img)
+                self.iconphoto(True, self._icon_img)
+        except Exception:
+            pass
         self.config_path = Path.home() / ".geo_builder.ini"
         self._config_parser = configparser.ConfigParser()
         self._user_config = {}
@@ -2088,18 +2106,21 @@ class App(BaseTk):
             w.destroy()
         header = tk.Frame(self, bg=BG_DARK, height=64); header.pack(side="top", fill="x"); header.pack_propagate(False)
         try:
-            logo_img_path = Path(__file__).with_name("GPI-768x768.jpg")
-            if HAVE_PIL and logo_img_path.exists():
+            logo_img_path = _find_logo_asset()
+            if HAVE_PIL and logo_img_path and logo_img_path.exists():
                 self._logo = ImageTk.PhotoImage(Image.open(logo_img_path).resize((40,40), Image.LANCZOS))
                 tk.Label(header, image=self._logo, bg=BG_DARK).pack(side="left", padx=18, pady=12)
         except Exception:
-            tk.Label(header, text="GPI", bg=BG_DARK, fg=TEXT_LIGHT, font=("Segoe UI",18,"bold")).pack(side="left", padx=18, pady=12)
+            pass
+        if not hasattr(self, "_logo"):
+            tk.Label(header, text="GeoBuilder", bg=BG_DARK, fg=TEXT_LIGHT,
+                     font=("Segoe UI",18,"bold")).pack(side="left", padx=18, pady=12)
         tk.Label(header, text="PlotClonjurer AI",
                  bg=BG_DARK, fg=TEXT_LIGHT, font=("Segoe UI",18,"bold")).pack(side="left", padx=8)
         tk.Label(header, text="Excel → XML (one geometry per sheet)", bg=BG_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(side="left", padx=16)
         self._settings_btn = tk.Button(header, text="⚙", command=self.open_settings, bg=BG_DARK, fg=TEXT_LIGHT, relief="flat",
                                        font=("Segoe UI Symbol",16), padx=10, pady=2, cursor="hand2",
-                                       activebackground=BG_DARK, activeforeground=GPI_HL, bd=0)
+                                       activebackground=BG_DARK, activeforeground=BRAND_HIGHLIGHT, bd=0)
         self._settings_btn.pack(side="right", padx=16)
         card = tk.Frame(self, bg=PANEL_DARK, highlightthickness=1, highlightbackground=PANEL_BORDER, bd=0)
         card.pack(padx=22, pady=(16,0), fill="both", expand=True)
@@ -2236,7 +2257,7 @@ class App(BaseTk):
                 "  • Output Units setting controls the distances written into the XML\n"
                 "  • Output is pretty-printed UTF-16 XML ready for OpenRoads Geometry Builder\n"
                 "\n"
-                "Creator: Levi Masters  •  Theme: GPI  •  Tool: PlotClonjurer AI\n")
+                "Creator: Levi Masters  •  Tool: PlotClonjurer AI\n")
         tk.Label(parent, text=info, justify="left", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(fill="x", padx=16, pady=(8,4))
         actions = tk.Frame(parent, bg=PANEL_DARK); actions.pack(fill="x", padx=16, pady=(6,12))
         btn_convert = self._cta_button(actions, "Convert"); btn_convert.pack(side="left"); btn_convert.configure(command=self.convert)
@@ -2429,10 +2450,10 @@ class App(BaseTk):
         try: self._deed_style.theme_use("clam")
         except: pass
         trough = CONSOLE_BG if THEME_MODE=="dark" else "#E7ECE7"
-        self._deed_style.configure("GPI.Small.Horizontal.TProgressbar", troughcolor=trough, background=GPI_HL,
-                                   bordercolor=PANEL_BORDER, lightcolor=GPI_HL, darkcolor=GPI_HL)
+        self._deed_style.configure("App.Small.Horizontal.TProgressbar", troughcolor=trough, background=BRAND_HIGHLIGHT,
+                                   bordercolor=PANEL_BORDER, lightcolor=BRAND_HIGHLIGHT, darkcolor=BRAND_HIGHLIGHT)
         pb_frame = tk.Frame(parent, bg=PANEL_DARK); pb_frame.pack(fill="x", padx=16, pady=(0,6))
-        self.pb_deed = ttk.Progressbar(pb_frame, orient="horizontal", mode="determinate", length=320, style="GPI.Small.Horizontal.TProgressbar")
+        self.pb_deed = ttk.Progressbar(pb_frame, orient="horizontal", mode="determinate", length=320, style="App.Small.Horizontal.TProgressbar")
         self.pb_deed.pack(side="left"); self.pb_deed["value"]=0; self.pb_deed["maximum"]=100
         tk.Label(parent, text="Preview / Edit Courses", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",10,"bold")).pack(anchor="w", padx=16, pady=(8,4))
         grid_toolbar = tk.Frame(parent, bg=PANEL_DARK); grid_toolbar.pack(fill="x", padx=16, pady=(0,4))
@@ -3849,10 +3870,10 @@ class App(BaseTk):
         self._add_hover(b, "#243B2F" if THEME_MODE=="dark" else "#DFE4DF", "#2E4A3C" if THEME_MODE=="dark" else "#C7D0C7")
         return b
     def _cta_button(self, parent, text):
-        b = tk.Button(parent, text=text, font=("Segoe UI",11,"bold"), bg=GPI_HL, fg=GPI_GREEN,
+        b = tk.Button(parent, text=text, font=("Segoe UI",11,"bold"), bg=BRAND_HIGHLIGHT, fg=BRAND_PRIMARY,
                       activebackground="#74A800", activeforeground="white", relief="flat", cursor="hand2",
                       padx=18, pady=8, bd=0, highlightthickness=0)
-        self._add_hover(b, GPI_HL, "#74A800"); return b
+        self._add_hover(b, BRAND_HIGHLIGHT, "#74A800"); return b
     def _add_hover(self, widget, base, hover):
         widget.bind("<Enter>", lambda e: widget.configure(bg=hover))
         widget.bind("<Leave>", lambda e: widget.configure(bg=base))
