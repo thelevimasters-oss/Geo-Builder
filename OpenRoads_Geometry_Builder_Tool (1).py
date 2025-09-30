@@ -23,7 +23,7 @@ This script is built to degrade gracefully if optional packages are missing:
 """
 
 import os
-import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess, shutil
+import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess, shutil, threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -969,6 +969,124 @@ def try_set_tesseract_cmd(custom_path: str = None, logger=None):
             logger(f"Existing Tesseract command {cmd_path} failed to run.")
     return False
 
+
+def ensure_tesseract_setup(app=None, logger=None):
+    """On Windows, ensure a working Tesseract binary is installed and remembered."""
+    if not sys.platform.startswith("win"):
+        return None, None
+    if pytesseract is None:
+        return None, "Automatic Tesseract setup requires the pytesseract package. Install it with 'pip install pytesseract pillow'."
+
+    def _log(msg):
+        if logger:
+            try:
+                logger(msg)
+            except Exception:
+                pass
+
+    def _current_command() -> Optional[Path]:
+        cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
+        normalized = _normalize_tesseract_path(cmd) if cmd else None
+        if normalized and normalized.exists() and _looks_like_tesseract_binary(normalized):
+            if _verify_tesseract_command(normalized):
+                return normalized
+        return None
+
+    def _apply_resolution(resolved: Path):
+        if not resolved:
+            return None
+        resolved_str = str(resolved)
+        os.environ[TESSERACT_ENV_VARS[0]] = resolved_str
+        if app is not None and hasattr(app, "settings"):
+            try:
+                current = app.settings.get("tesseract_path")
+            except Exception:
+                current = None
+            if current != resolved_str:
+                try:
+                    app.settings["tesseract_path"] = resolved_str
+                except Exception:
+                    pass
+                if hasattr(app, "_save_user_config"):
+                    try:
+                        app._save_user_config()
+                    except Exception:
+                        pass
+        return resolved
+
+    resolved = _current_command()
+    if resolved:
+        return _apply_resolution(resolved), None
+
+    if try_set_tesseract_cmd(logger=logger):
+        resolved = _current_command()
+        if resolved:
+            return _apply_resolution(resolved), None
+
+    winget_path = shutil.which("winget") or "winget"
+    install_args = "install --id UB-Mannheim.Tesseract-OCR -e --source winget --accept-package-agreements --accept-source-agreements --silent"
+    ps_command = (
+        f'Start-Process -FilePath "{winget_path}" '
+        f'-ArgumentList "{install_args}" -Verb RunAs -WindowStyle Hidden -Wait'
+    )
+    _log("Tesseract not detected. Attempting installation via winget…")
+    try:
+        completed = subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_command],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=600,
+        )
+    except FileNotFoundError:
+        message = "PowerShell is not available; unable to launch winget for Tesseract installation."
+        _log(message)
+        return None, message
+    except subprocess.SubprocessError as exc:
+        message = f"Automatic Tesseract installation failed to launch: {exc}"
+        _log(message)
+        return None, message
+
+    stdout = (completed.stdout or "").strip()
+    stderr = (completed.stderr or "").strip()
+    err_lower = stderr.lower()
+    if completed.returncode != 0:
+        if stdout:
+            _log(stdout)
+        if stderr:
+            _log(stderr)
+        if "winget" in err_lower and "not" in err_lower and ("recognized" in err_lower or "find" in err_lower or "found" in err_lower):
+            message = "winget is not installed or accessible. Install winget from the Microsoft Store, then retry automatic setup."
+        else:
+            message = "winget could not install Tesseract automatically. Review the log for details and install manually from https://github.com/UB-Mannheim/tesseract/wiki."
+        return None, message
+
+    _log("winget installation completed. Verifying Tesseract binary…")
+
+    if not try_set_tesseract_cmd(logger=logger):
+        search_roots: List[str] = [
+            r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe",
+            r"C:\\Program Files (x86)\\Tesseract-OCR\\tesseract.exe",
+        ]
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            search_roots.append(str(Path(local_appdata) / "Programs" / "Tesseract-OCR" / "tesseract.exe"))
+        for raw in search_roots:
+            normalized = _normalize_tesseract_path(raw)
+            if not normalized:
+                continue
+            if try_set_tesseract_cmd(str(normalized), logger=logger):
+                break
+
+    resolved = _current_command()
+    if resolved:
+        _log(f"Tesseract ready at: {resolved}")
+        return _apply_resolution(resolved), None
+
+    message = "Tesseract installation finished but the executable was not located. Set the path manually in Settings after verifying the install."
+    _log(message)
+    return None, message
+
 def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
     text = ""
     if pdfplumber is not None:
@@ -1741,6 +1859,7 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(master)
         self.title("Settings"); self.configure(bg=PANEL_DARK); self.geometry("560x520")
         self.transient(master); self.grab_set(); self.on_apply = on_apply
+        self.settings = master.settings if hasattr(master, "settings") else {}
         self.ai_training_var = tk.StringVar(value=current_ai_dir or "")
         container = tk.Frame(self, bg=PANEL_DARK)
         container.pack(fill="both", expand=True)
@@ -1811,6 +1930,16 @@ class SettingsDialog(tk.Toplevel):
                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
                   relief="flat", padx=10, pady=5, cursor="hand2").pack(side="left", padx=6)
+        self._auto_btn = tk.Button(o, text="Auto-configure", command=self._auto_configure_tesseract,
+                                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
+                                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
+                                   relief="flat", padx=10, pady=5, cursor="hand2")
+        self._auto_btn.pack(side="left", padx=(6,0))
+        self._auto_progress = ttk.Progressbar(o, mode="indeterminate", length=90)
+        self._auto_status_var = tk.StringVar(value="")
+        tk.Label(content, textvariable=self._auto_status_var, bg=PANEL_DARK, fg=TEXT_SOFT,
+                 font=("Segoe UI",9), wraplength=460, justify="left").pack(anchor="w", padx=14, pady=(0,4))
+        self._auto_thread: Optional[threading.Thread] = None
         tk.Label(content, text="AI Tools", bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",12,"bold")).pack(anchor="w", padx=14, pady=(12,6))
         tk.Label(content, text="Manage the spaCy deed-call model and training library.", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",9), wraplength=460, justify="left").pack(anchor="w", padx=14, pady=(0,6))
         ai_path_row = tk.Frame(content, bg=PANEL_DARK)
@@ -1844,8 +1973,73 @@ class SettingsDialog(tk.Toplevel):
                   bg=BRAND_HIGHLIGHT, fg=BRAND_PRIMARY, relief="flat", padx=16, pady=6, cursor="hand2").pack(side="right", padx=6)
     def _browse_tess(self):
         p = filedialog.askopenfilename(title="Select tesseract.exe", filetypes=[("tesseract.exe","tesseract.exe"),("All files","*.*")])
-        if not p: return
+        if not p:
+            return
         self.tesseract_var.set(p)
+
+    def _auto_configure_tesseract(self):
+        if self._auto_thread and self._auto_thread.is_alive():
+            return
+        if not sys.platform.startswith("win"):
+            messagebox.showinfo(
+                "Auto-configure Tesseract",
+                "Automatic installation is available on Windows only. Please set the path manually.",
+                parent=self,
+            )
+            return
+        if pytesseract is None:
+            messagebox.showwarning(
+                "Auto-configure Tesseract",
+                "Install the 'pytesseract' and 'pillow' packages before running automatic setup.",
+                parent=self,
+            )
+            return
+
+        self._auto_status_var.set("Attempting to configure Tesseract automatically…")
+        self._auto_btn.config(state="disabled")
+        try:
+            self._auto_progress.pack(side="left", padx=(6,0))
+        except Exception:
+            pass
+        try:
+            self._auto_progress.start(12)
+        except Exception:
+            pass
+
+        logger = getattr(self.master, "_log", None)
+
+        def _worker():
+            path, error = ensure_tesseract_setup(app=self.master, logger=logger)
+            self.after(0, lambda: self._on_auto_configure_done(path, error))
+
+        self._auto_thread = threading.Thread(target=_worker, daemon=True)
+        self._auto_thread.start()
+
+    def _on_auto_configure_done(self, path: Optional[Path], error: Optional[str]):
+        try:
+            self._auto_progress.stop()
+        except Exception:
+            pass
+        try:
+            self._auto_progress.pack_forget()
+        except Exception:
+            pass
+        self._auto_btn.config(state="normal")
+        if path:
+            path_str = str(path)
+            self.tesseract_var.set(path_str)
+            if hasattr(self.master, "settings"):
+                try:
+                    self.master.settings["tesseract_path"] = path_str
+                except Exception:
+                    pass
+            self._auto_status_var.set(f"Tesseract configured at: {path_str}")
+            messagebox.showinfo("Auto-configure Tesseract", "Tesseract is ready for use.", parent=self)
+        else:
+            message = error or "Automatic setup was unable to locate Tesseract. Please install it manually."
+            self._auto_status_var.set(message)
+            messagebox.showwarning("Auto-configure Tesseract", message, parent=self)
+
     def _choose_spcs(self):
         self.master.open_spcs_dialog()
         value = getattr(self.master, "selected_spcs", "")
@@ -2058,6 +2252,13 @@ class App(BaseTk):
     def _bootstrap_tesseract(self):
         if pytesseract is None:
             return
+        ensured_path, ensure_error = ensure_tesseract_setup(app=self, logger=self._log)
+        if ensure_error and ensured_path is None:
+            self._log(ensure_error)
+            try:
+                messagebox.showwarning("Tesseract Setup", ensure_error, parent=self)
+            except Exception:
+                pass
         sources: List[Tuple[str, str]] = []
         saved_path = (self.settings.get("tesseract_path") or "").strip()
         if saved_path:
