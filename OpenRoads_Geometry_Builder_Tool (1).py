@@ -22,6 +22,7 @@ This script is built to degrade gracefully if optional packages are missing:
 - Drag & drop: tkinterdnd2
 """
 
+import os
 import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess, shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -798,6 +799,16 @@ def try_set_tesseract_cmd(custom_path: str = None):
         Path(r"C:\Program Files\Tesseract-OCR\tesseract.exe"),
         Path(r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe"),
     ])
+    if sys.platform.startswith("win"):
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            auto_candidates.append(Path(local_appdata) / "Programs" / "Tesseract-OCR" / "tesseract.exe")
+        # Some installations (portable builds) live next to the Python Scripts folder.
+        try:
+            scripts_dir = Path(sys.executable).resolve().parent
+            auto_candidates.append(scripts_dir / "tesseract.exe")
+        except Exception:
+            pass
 
     seen = {path.resolve() for path in candidate_paths if path}
     for auto_candidate in auto_candidates:
@@ -864,21 +875,30 @@ def ocr_pdf_with_pytesseract(pdf_path: Path, dpi: int = 300, tesseract_path: Opt
     """
     if pytesseract is None:
         raise RuntimeError("OCR requires pytesseract. Install with: pip install pytesseract pillow")
+    invalid_custom_path = False
     if tesseract_path:
         if not try_set_tesseract_cmd(tesseract_path):
-            raise RuntimeError(f"Tesseract executable not found at: {tesseract_path}")
+            invalid_custom_path = True
     current_cmd = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
     normalized_cmd = _normalize_tesseract_path(current_cmd)
-    if normalized_cmd and normalized_cmd.exists():
+    if normalized_cmd and normalized_cmd.exists() and _looks_like_tesseract_binary(normalized_cmd):
         pytesseract.pytesseract.tesseract_cmd = str(normalized_cmd)
     else:
-        auto_cmd = shutil.which(current_cmd) if current_cmd else None
-        if not auto_cmd:
+        if invalid_custom_path and logger:
+            bad_path = Path(str(tesseract_path)) if tesseract_path else None
+            if bad_path and "pytesseract" in bad_path.name.lower():
+                logger("Provided path points to pytesseract.exe; please select the real tesseract.exe from the Tesseract-OCR installation.")
+            elif tesseract_path:
+                logger(f"Tesseract executable not found at: {tesseract_path}")
+        if not try_set_tesseract_cmd():
             auto_cmd = shutil.which("tesseract") or shutil.which("tesseract.exe")
-        if auto_cmd:
-            pytesseract.pytesseract.tesseract_cmd = auto_cmd
-    cmd_path = getattr(pytesseract.pytesseract, "tesseract_cmd", "")
-    if not cmd_path or not Path(cmd_path).exists():
+            if auto_cmd:
+                pytesseract.pytesseract.tesseract_cmd = auto_cmd
+    cmd_path = getattr(pytesseract.pytesseract, "tesseract_cmd", "") or ""
+    normalized_cmd = _normalize_tesseract_path(cmd_path)
+    if not (normalized_cmd and normalized_cmd.exists() and _looks_like_tesseract_binary(normalized_cmd)):
+        if logger:
+            logger("Tesseract executable is not configured. Set the path in Settings before running OCR.")
         raise RuntimeError("Tesseract executable is not configured. Set the path in Settings before running OCR.")
 
     last_pdf2image_error: Optional[Exception] = None
