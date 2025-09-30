@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-PlotConjurer AI Geometry Builder XML Generator — GPI Theme
+PlotClonjurer AI — GPI Theme
 
 ✓ Excel → XML (one Geometry per sheet; Geometry name = sheet name)
 ✓ Settings: Theme (dark/light), Input Units (feet/meters/rods/chains), Output Units (feet/meters), Bearing Format (DMS/Decimal)
@@ -1635,7 +1635,7 @@ class Splash(tk.Toplevel):
                 self._logo = ImageTk.PhotoImage(img)
                 tk.Label(head, image=self._logo, bg=PANEL_DARK).pack(side="left", padx=(0,12))
         except Exception: pass
-        tk.Label(head, text="PlotConjurer AI Geometry Builder XML Generator",
+        tk.Label(head, text="PlotClonjurer AI",
                  bg=PANEL_DARK, fg=TEXT_LIGHT, font=("Segoe UI",14,"bold")).pack(side="left", anchor="w")
         tk.Label(card, text="Initializing…", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(anchor="w", padx=16, pady=(0,12))
         self.style = ttk.Style(self)
@@ -1967,7 +1967,7 @@ class App(BaseTk):
                 tk.Tk.__init__(self)
             else:
                 raise
-        self.title("PlotConjurer AI Geometry Builder XML Generator — GPI")
+        self.title("PlotClonjurer AI — GPI")
         self.geometry("1260x820"); self.minsize(1140,760); self.configure(bg=BG_DARK)
         try:
             icon_path = Path(__file__).with_name("GPI-768x768.jpg")
@@ -2076,7 +2076,7 @@ class App(BaseTk):
                 tk.Label(header, image=self._logo, bg=BG_DARK).pack(side="left", padx=18, pady=12)
         except Exception:
             tk.Label(header, text="GPI", bg=BG_DARK, fg=TEXT_LIGHT, font=("Segoe UI",18,"bold")).pack(side="left", padx=18, pady=12)
-        tk.Label(header, text="PlotConjurer AI Geometry Builder XML Generator",
+        tk.Label(header, text="PlotClonjurer AI",
                  bg=BG_DARK, fg=TEXT_LIGHT, font=("Segoe UI",18,"bold")).pack(side="left", padx=8)
         tk.Label(header, text="Excel → XML (one geometry per sheet)", bg=BG_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(side="left", padx=16)
         self._settings_btn = tk.Button(header, text="⚙", command=self.open_settings, bg=BG_DARK, fg=TEXT_LIGHT, relief="flat",
@@ -2166,7 +2166,7 @@ class App(BaseTk):
                 "  • Output Units setting controls the distances written into the XML\n"
                 "  • Output is pretty-printed UTF-16 XML ready for OpenRoads Geometry Builder\n"
                 "\n"
-                "Creator: Levi Masters  •  Theme: GPI  •  Tool: PlotConjurer AI Geometry Builder XML Generator\n")
+                "Creator: Levi Masters  •  Theme: GPI  •  Tool: PlotClonjurer AI\n")
         tk.Label(parent, text=info, justify="left", bg=PANEL_DARK, fg=TEXT_SOFT, font=("Segoe UI",10)).pack(fill="x", padx=16, pady=(8,4))
         actions = tk.Frame(parent, bg=PANEL_DARK); actions.pack(fill="x", padx=16, pady=(6,12))
         btn_convert = self._cta_button(actions, "Convert"); btn_convert.pack(side="left"); btn_convert.configure(command=self.convert)
