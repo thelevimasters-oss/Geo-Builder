@@ -795,16 +795,67 @@ def extract_text_from_pdf(pdf_path: Path, logger=None) -> str:
 
 
 def ocr_pdf_with_pytesseract(pdf_path: Path, dpi: int = 300, tesseract_path: Optional[str] = None,
-                             logger=None) -> str:
-    """OCR a scanned deed PDF to text using pdf2image and pytesseract."""
-    if pdf2image is None or pytesseract is None:
-        raise RuntimeError("OCR requires pdf2image and pytesseract. Install with: pip install pdf2image pytesseract pillow")
+                             logger=None, progress_callback=None) -> str:
+    """OCR a scanned deed PDF to text.
+
+    The function first attempts to rasterize the PDF with pdf2image (Poppler).
+    If Poppler binaries are unavailable it automatically falls back to using
+    PyMuPDF to render page images, avoiding manual installation steps.
+    """
+    if pytesseract is None:
+        raise RuntimeError("OCR requires pytesseract. Install with: pip install pytesseract pillow")
     if tesseract_path:
         try_set_tesseract_cmd(tesseract_path)
-    images = pdf2image.convert_from_path(str(pdf_path), dpi=dpi)
+
+    last_pdf2image_error: Optional[Exception] = None
+    total_pages: int = 0
+
+    def iter_page_images():
+        nonlocal last_pdf2image_error, total_pages
+        if pdf2image is not None:
+            try:
+                images = pdf2image.convert_from_path(str(pdf_path), dpi=dpi)
+                total_pages = len(images)
+                if logger:
+                    logger(f"Rendering {total_pages} page(s) via pdf2image for OCR.")
+                for image in images:
+                    yield image
+                return
+            except Exception as exc:
+                last_pdf2image_error = exc
+                if logger:
+                    logger(f"pdf2image convert_from_path failed: {exc}")
+                    if "poppler" in str(exc).lower():
+                        logger("Poppler not detected; attempting PyMuPDF fallback.")
+        if fitz is not None:
+            try:
+                doc = fitz.open(str(pdf_path))
+            except Exception as exc:
+                raise RuntimeError(f"PyMuPDF could not open {pdf_path.name}: {exc}") from exc
+            total_pages = doc.page_count or 0
+            if logger:
+                logger(f"Rendering {total_pages} page(s) via PyMuPDF for OCR.")
+            for page in doc:
+                if not HAVE_PIL:
+                    raise RuntimeError("Pillow is required for PyMuPDF OCR fallback but is not available.")
+                pix = page.get_pixmap(dpi=dpi)
+                image_bytes = io.BytesIO(pix.tobytes("png"))
+                image = Image.open(image_bytes)
+                image.load()
+                yield image
+            return
+        err_msg = "OCR requires either pdf2image (with Poppler) or PyMuPDF to render pages."
+        if last_pdf2image_error is not None:
+            err_msg += f" pdf2image error: {last_pdf2image_error}"
+        raise RuntimeError(err_msg)
+
     text_blocks: List[str] = []
-    for page_number, image in enumerate(images, start=1):
+    processed_pages = 0
+    for page_number, image in enumerate(iter_page_images(), start=1):
+        processed_pages = page_number
         try:
+            if progress_callback:
+                progress_callback(page_number - 1, total_pages or page_number, "ocr")
             page_text = pytesseract.image_to_string(image)
             if page_text:
                 text_blocks.append(page_text)
@@ -813,6 +864,8 @@ def ocr_pdf_with_pytesseract(pdf_path: Path, dpi: int = 300, tesseract_path: Opt
         except Exception as exc:
             if logger:
                 logger(f"OCR failed on page {page_number}: {exc}")
+    if progress_callback and processed_pages:
+        progress_callback(processed_pages, total_pages or processed_pages, "ocr")
     return "\n".join(block.strip() for block in text_blocks if block).strip()
 
 
@@ -2226,22 +2279,51 @@ class App(BaseTk):
             messagebox.showwarning("Model unavailable", "Train the AI model from Settings before running AI extraction.")
             return
         self._log(f"AI extract & parse → {p}")
+        progress = getattr(self, "pb_deed", None)
+        if progress:
+            progress["value"] = 0
+            progress.update_idletasks()
+
+        def _update_progress(done_pages: int, total_pages: int, stage: str = "ocr"):
+            if not progress:
+                return
+            total_pages = max(total_pages, 1)
+            if stage == "ocr":
+                ratio = min(max(done_pages, 0), total_pages) / total_pages
+                progress["value"] = 10 + ratio * 60
+            else:
+                progress["value"] = max(progress["value"], 80)
+            progress.update_idletasks()
         tess_path = self.settings.get("tesseract_path")
         if tess_path:
             try_set_tesseract_cmd(tess_path)
         try:
-            text_value = ocr_pdf_with_pytesseract(p, tesseract_path=tess_path, logger=self._log) or ""
+            text_value = ocr_pdf_with_pytesseract(
+                p,
+                tesseract_path=tess_path,
+                logger=self._log,
+                progress_callback=_update_progress,
+            ) or ""
         except Exception as exc:
+            if progress:
+                progress["value"] = 0
+                progress.update_idletasks()
             messagebox.showerror("AI extraction failed", str(exc))
             self._log(f"AI extraction failed: {exc}")
             return
         if not text_value.strip():
+            if progress:
+                progress["value"] = 0
+                progress.update_idletasks()
             messagebox.showwarning("No OCR text", "The AI extraction did not return any text for this PDF.")
             self._log("AI extraction produced no text.")
             return
         if getattr(self, "deed_text", None):
             self.deed_text.delete("1.0", "end")
             self.deed_text.insert("1.0", text_value)
+        if progress:
+            progress["value"] = max(progress["value"], 75)
+            progress.update_idletasks()
         self.deed_pdf_path = p
         self.manual_call_entries = []
         self.deed_ai_last_results = []
@@ -2249,6 +2331,9 @@ class App(BaseTk):
             calls = extract_deed_calls_with_model(model, text_value)
             self.deed_ai_last_results = calls
         except Exception as exc:
+            if progress:
+                progress["value"] = 0
+                progress.update_idletasks()
             messagebox.showerror("AI parsing failed", str(exc))
             self._log(f"AI parsing failed: {exc}")
             return
@@ -2299,6 +2384,9 @@ class App(BaseTk):
         self._log(msg)
         if not ai_entries:
             messagebox.showinfo("No calls detected", "The AI model did not detect any deed calls in this PDF.")
+        if progress:
+            progress["value"] = 100
+            progress.update_idletasks()
 
     def clear_deed_text(self):
         if getattr(self, "deed_text", None):
