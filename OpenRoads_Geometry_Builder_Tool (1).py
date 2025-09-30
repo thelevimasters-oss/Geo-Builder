@@ -1957,12 +1957,19 @@ class SettingsDialog(tk.Toplevel):
                   relief="flat", padx=10, pady=6, cursor="hand2").pack(anchor="w", padx=14, pady=(0,8))
         ai_btns = tk.Frame(content, bg=PANEL_DARK)
         ai_btns.pack(fill="x", padx=14, pady=(0,10))
-        tk.Button(ai_btns, text="Train Model", command=self._train_ai_model,
-                  bg=BRAND_HIGHLIGHT, fg=BRAND_PRIMARY, relief="flat", padx=14, pady=6, cursor="hand2").pack(side="left")
+        self.train_btn = tk.Button(ai_btns, text="Train Model", command=self._train_ai_model,
+                                    bg=BRAND_HIGHLIGHT, fg=BRAND_PRIMARY, relief="flat", padx=14, pady=6, cursor="hand2")
+        self.train_btn.pack(side="left")
         tk.Button(ai_btns, text="Export Last Calls…", command=self._export_ai_calls,
                   bg="#243B2F" if THEME_MODE=="dark" else "#DFE4DF",
                   fg=TEXT_LIGHT if THEME_MODE=="dark" else "#183024",
                   relief="flat", padx=12, pady=6, cursor="hand2").pack(side="left", padx=(10,0))
+        self.train_progress = ttk.Progressbar(ai_btns, mode="indeterminate", length=140)
+        try:
+            self.train_progress.pack(side="left", padx=(10, 0))
+            self.train_progress.pack_forget()
+        except Exception:
+            self.train_progress = None
         footer = tk.Frame(self, bg=PANEL_DARK)
         footer.pack(fill="x", padx=14, pady=(8,14))
         tk.Button(footer, text="Cancel", command=self.destroy,
@@ -2055,6 +2062,41 @@ class SettingsDialog(tk.Toplevel):
         self.master.settings["ai_training_dir"] = value
         self.master._save_user_config()
         self.master.train_deed_ai_model(parent=self)
+
+    def show_ai_training_progress(self):
+        if hasattr(self, "train_btn"):
+            try:
+                self.train_btn.config(state="disabled")
+            except Exception:
+                pass
+        progress = getattr(self, "train_progress", None)
+        if not progress:
+            return
+        try:
+            progress.pack(side="left", padx=(10, 0))
+        except Exception:
+            pass
+        try:
+            progress.start(12)
+        except Exception:
+            pass
+
+    def hide_ai_training_progress(self):
+        progress = getattr(self, "train_progress", None)
+        if progress:
+            try:
+                progress.stop()
+            except Exception:
+                pass
+            try:
+                progress.pack_forget()
+            except Exception:
+                pass
+        if hasattr(self, "train_btn"):
+            try:
+                self.train_btn.config(state="normal")
+            except Exception:
+                pass
 
     def _export_ai_calls(self):
         self.master.save_deed_ai_calls(parent=self)
@@ -2246,6 +2288,8 @@ class App(BaseTk):
         self.deed_ai_model_path = Path(__file__).with_name("deed_ner_model")
         self.deed_ai_last_results: List[Tuple[str, Tuple[int, int]]] = []
         self.ai_output_text = None
+        self._ai_detect_thread: Optional[threading.Thread] = None
+        self._ai_training_thread: Optional[threading.Thread] = None
         self._bootstrap_tesseract()
         self.withdraw(); self.after(10, lambda: Splash(self, duration_ms=1100, on_done=self._after_splash))
     def _after_splash(self): self.deiconify(); self._build_ui()
@@ -2365,6 +2409,12 @@ class App(BaseTk):
         self.status_lbl = tk.Label(self.status_bar, text="Tip: Use Settings (⚙) to set units, bearing format, and OCR path.",
                                    bg=STATUS_BG, fg=STATUS_FG, anchor="w", padx=10, font=("Segoe UI",9))
         self.status_lbl.pack(side="left", fill="x")
+        self.ai_training_progress = ttk.Progressbar(self.status_bar, mode="indeterminate", length=160)
+        try:
+            self.ai_training_progress.pack(side="right", padx=(0, 12))
+            self.ai_training_progress.pack_forget()
+        except Exception:
+            self.ai_training_progress = None
         self._bind_hint(self._settings_btn, "Open Settings (theme, units, bearing format, OCR path)")
         if self._dnd_error:
             msg = ("Drag & drop support could not be enabled because the tkdnd library is missing. "
@@ -2535,24 +2585,122 @@ class App(BaseTk):
 
     def train_deed_ai_model(self, parent=None):
         if spacy is None:
-            messagebox.showerror("spaCy not available", "spaCy is required for AI training and could not be installed automatically.\nInstall manually with: pip install spacy", parent=parent or self)
+            messagebox.showerror(
+                "spaCy not available",
+                "spaCy is required for AI training and could not be installed automatically.\nInstall manually with: pip install spacy",
+                parent=parent or self,
+            )
+            return
+        if self._ai_training_thread and self._ai_training_thread.is_alive():
+            messagebox.showinfo(
+                "AI training in progress",
+                "The AI model is currently training. Please wait for it to finish before starting a new training run.",
+                parent=parent or self,
+            )
             return
         folder_path = Path(self.ai_training_folder_var.get() or "")
         if not folder_path.exists():
-            messagebox.showwarning("Training folder missing", "Select a training folder that contains deed PDFs and labeled Excel files.", parent=parent or self)
+            messagebox.showwarning(
+                "Training folder missing",
+                "Select a training folder that contains deed PDFs and labeled Excel files.",
+                parent=parent or self,
+            )
             return
         try:
-            dataset = load_deed_training_dataset(folder_path, tesseract_path=self.settings.get("tesseract_path"), logger=self._log)
-            if not dataset:
-                messagebox.showinfo("No training data", "No labeled deed calls were found in the selected folder.", parent=parent or self)
-                return
-            model = train_deed_spacy_model(dataset, output_dir=self.deed_ai_model_path, logger=self._log)
-            self.deed_ai_model = model
-            messagebox.showinfo("Training complete", f"Model trained with {len(dataset)} document(s).", parent=parent or self)
-            self._log("Deed AI model trained successfully.")
+            dataset = load_deed_training_dataset(
+                folder_path,
+                tesseract_path=self.settings.get("tesseract_path"),
+                logger=self._log,
+            )
         except Exception as exc:
-            self._log(f"AI training failed: {exc}")
             messagebox.showerror("Training failed", str(exc), parent=parent or self)
+            self._log(f"AI training failed: {exc}")
+            return
+        if not dataset:
+            messagebox.showinfo(
+                "No training data",
+                "No labeled deed calls were found in the selected folder.",
+                parent=parent or self,
+            )
+            return
+
+        documents = len(dataset)
+        self._log(f"Starting AI model training with {documents} document(s)…")
+        if parent and hasattr(parent, "show_ai_training_progress"):
+            try:
+                parent.show_ai_training_progress()
+            except Exception:
+                pass
+        self._start_ai_training_progress()
+
+        def thread_logger(message: str):
+            self.after(0, lambda m=message: self._log(m))
+
+        def _worker():
+            try:
+                train_deed_spacy_model(
+                    dataset,
+                    output_dir=self.deed_ai_model_path,
+                    logger=thread_logger,
+                )
+            except Exception as exc:
+                self.after(0, lambda e=exc: self._on_ai_training_done(parent, documents, error=e))
+                return
+            self.after(0, lambda: self._on_ai_training_done(parent, documents))
+
+        self._ai_training_thread = threading.Thread(target=_worker, daemon=True)
+        self._ai_training_thread.start()
+
+    def _start_ai_training_progress(self):
+        progress = getattr(self, "ai_training_progress", None)
+        if not progress:
+            return
+        try:
+            progress["value"] = 0
+            progress.update_idletasks()
+        except Exception:
+            pass
+        try:
+            progress.pack(side="right", padx=(0, 12))
+        except Exception:
+            pass
+        try:
+            progress.start(12)
+        except Exception:
+            pass
+
+    def _stop_ai_training_progress(self):
+        progress = getattr(self, "ai_training_progress", None)
+        if not progress:
+            return
+        try:
+            progress.stop()
+        except Exception:
+            pass
+        try:
+            progress.pack_forget()
+        except Exception:
+            pass
+
+    def _on_ai_training_done(self, parent, documents: int, error: Optional[Exception] = None):
+        self._ai_training_thread = None
+        self._stop_ai_training_progress()
+        if parent and hasattr(parent, "hide_ai_training_progress"):
+            try:
+                parent.hide_ai_training_progress()
+            except Exception:
+                pass
+        if error is not None:
+            messagebox.showerror("AI training failed", str(error), parent=parent or self)
+            self._log(f"AI training failed: {error}")
+            return
+        self.deed_ai_model = None
+        messagebox.showinfo(
+            "Training complete",
+            f"Model trained with {documents} document(s).",
+            parent=parent or self,
+        )
+        self._log("Deed AI model trained successfully.")
 
     def run_deed_ai_analysis(self):
         if spacy is None:
@@ -2847,20 +2995,77 @@ class App(BaseTk):
         if not text_value.strip():
             messagebox.showinfo("No deed text", "Extract or paste deed text before running the AI call detector.")
             return
+        if self._ai_detect_thread and self._ai_detect_thread.is_alive():
+            messagebox.showinfo("AI analysis in progress", "The AI call detector is already analyzing the deed text. Please wait for it to finish.")
+            return
         self._log("AI call detector analyzing deed text…")
+        self._start_ai_detection_progress()
+
+        def _worker():
+            try:
+                calls = extract_deed_calls_with_model(model, text_value)
+            except Exception as exc:
+                self.after(0, lambda e=exc: self._on_ai_detect_complete(text_value, error=e))
+                return
+            self.after(0, lambda: self._on_ai_detect_complete(text_value, calls=calls))
+
+        self._ai_detect_thread = threading.Thread(target=_worker, daemon=True)
+        self._ai_detect_thread.start()
+
+    def _start_ai_detection_progress(self):
+        if hasattr(self, "btn_ai_call_detector"):
+            try:
+                self.btn_ai_call_detector.config(state="disabled")
+            except Exception:
+                pass
         progress = getattr(self, "pb_deed", None)
-        if progress:
+        if not progress:
+            return
+        try:
             progress["value"] = 0
             progress.update_idletasks()
+        except Exception:
+            pass
         try:
-            calls = extract_deed_calls_with_model(model, text_value)
-        except Exception as exc:
-            if progress:
-                progress["value"] = 0
-                progress.update_idletasks()
-            messagebox.showerror("AI detection failed", str(exc))
-            self._log(f"AI detection failed: {exc}")
+            progress.config(mode="indeterminate")
+        except Exception:
+            pass
+        try:
+            progress.start(12)
+        except Exception:
+            pass
+
+    def _finish_ai_detection_progress(self, success: bool):
+        if hasattr(self, "btn_ai_call_detector"):
+            try:
+                self.btn_ai_call_detector.config(state="normal")
+            except Exception:
+                pass
+        progress = getattr(self, "pb_deed", None)
+        if not progress:
             return
+        try:
+            progress.stop()
+        except Exception:
+            pass
+        try:
+            progress.config(mode="determinate")
+        except Exception:
+            pass
+        try:
+            progress["value"] = 100 if success else 0
+            progress.update_idletasks()
+        except Exception:
+            pass
+
+    def _on_ai_detect_complete(self, text_value: str, calls: Optional[List[Tuple[str, Tuple[int, int]]]] = None, error: Optional[Exception] = None):
+        self._ai_detect_thread = None
+        self._finish_ai_detection_progress(success=error is None)
+        if error is not None:
+            messagebox.showerror("AI detection failed", str(error))
+            self._log(f"AI detection failed: {error}")
+            return
+        calls = calls or []
         self.deed_ai_last_results = calls
         ai_entries = self._build_ai_call_entries(text_value, calls)
         if ai_entries:
@@ -2876,9 +3081,6 @@ class App(BaseTk):
         self._log(msg)
         if not ai_entries:
             messagebox.showinfo("No calls detected", "The AI model did not detect any deed calls in the current text.")
-        if progress:
-            progress["value"] = 100
-            progress.update_idletasks()
 
     def clear_deed_text(self):
         if getattr(self, "deed_text", None):
