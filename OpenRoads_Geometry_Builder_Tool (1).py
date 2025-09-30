@@ -351,6 +351,75 @@ else:
     Example = None
 
 
+def _has_lookup_table(lookups, name: str) -> bool:
+    """Return True if the provided spaCy lookups registry has *name*."""
+    if lookups is None:
+        return False
+    try:
+        has_table = getattr(lookups, "has_table", None)
+        if callable(has_table):
+            return bool(has_table(name))
+    except Exception:
+        pass
+    tables = getattr(lookups, "tables", None)
+    if isinstance(tables, dict):
+        return name in tables
+    return False
+
+
+def ensure_spacy_lexeme_norm(nlp, logger=None):
+    """Ensure that spaCy has the lexeme_norm lookup table available."""
+    if spacy is None or nlp is None:
+        return
+    try:
+        lookups = getattr(nlp.vocab, "lookups", None)
+    except Exception:
+        lookups = None
+    if _has_lookup_table(lookups, "lexeme_norm"):
+        return
+
+    loaded_from_package = False
+    try:
+        from spacy_lookups_data import load_lookups  # type: ignore
+
+        lookups = load_lookups(lang=getattr(nlp, "lang", "en"))
+        if _has_lookup_table(lookups, "lexeme_norm"):
+            nlp.vocab.lookups = lookups
+            loaded_from_package = True
+            if logger:
+                logger("Loaded lexeme_norm lookup table from spacy-lookups-data.")
+    except Exception as exc:
+        if logger:
+            logger(f"spaCy lookup data unavailable ({exc}). Using fallback lexeme_norm table.")
+
+    if loaded_from_package:
+        return
+
+    try:
+        from spacy.lookups import Lookups  # type: ignore
+    except Exception:
+        Lookups = None
+
+    if Lookups is not None:
+        try:
+            lookups = getattr(nlp.vocab, "lookups", None)
+        except Exception:
+            lookups = None
+        if lookups is None:
+            lookups = Lookups()
+        if not _has_lookup_table(lookups, "lexeme_norm"):
+            try:
+                lookups.add_table("lexeme_norm", {})
+            except Exception:
+                pass
+        try:
+            nlp.vocab.lookups = lookups
+        except Exception:
+            pass
+    elif logger:
+        logger("Unable to import spaCy Lookups class for fallback lexeme_norm table.")
+
+
 def ensure_spacy_model(model_name: str = "en_core_web_sm") -> bool:
     if spacy is None:
         return False
@@ -1362,6 +1431,7 @@ def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
         nlp = spacy.blank("en")
         if logger:
             logger("Falling back to blank English spaCy model.")
+    ensure_spacy_lexeme_norm(nlp, logger=logger)
     if "ner" not in nlp.pipe_names:
         ner = nlp.add_pipe("ner")
     else:
@@ -2769,6 +2839,7 @@ class App(BaseTk):
         if self.deed_ai_model_path.exists():
             try:
                 self.deed_ai_model = spacy.load(self.deed_ai_model_path)
+                ensure_spacy_lexeme_norm(self.deed_ai_model, logger=self._log)
                 self._log("Loaded saved deed AI model.")
                 return self.deed_ai_model
             except Exception as exc:
@@ -2776,6 +2847,7 @@ class App(BaseTk):
         if ensure_spacy_model():
             try:
                 self.deed_ai_model = spacy.load("en_core_web_sm")
+                ensure_spacy_lexeme_norm(self.deed_ai_model, logger=self._log)
                 self._log("Loaded spaCy en_core_web_sm model as fallback.")
             except Exception as exc:
                 self._log(f"Failed to load en_core_web_sm: {exc}")
@@ -2783,6 +2855,7 @@ class App(BaseTk):
         if self.deed_ai_model is None:
             self.deed_ai_model = spacy.blank("en")
             if self.deed_ai_model is not None:
+                ensure_spacy_lexeme_norm(self.deed_ai_model, logger=self._log)
                 self._log("Initialized blank spaCy English model. Training is recommended before analysis.")
         if self.deed_ai_model is not None:
             if "ner" not in self.deed_ai_model.pipe_names:
