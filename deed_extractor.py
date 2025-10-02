@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import importlib
+import importlib.util
 import json
+import os
 import re
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Sequence, TextIO, Tuple
@@ -59,6 +62,117 @@ _HEADER_FOOTER_PATTERNS: Iterable[re.Pattern[str]] = (
 
 _DEFAULT_MODEL_DIRNAME = "deed_ner_model"
 _MODEL_META_FILENAME = "meta.json"
+
+_ENTITY_RULER_PATTERNS = [
+    {
+        "label": "DEED_CALL",
+        "pattern": [
+            {"TEXT": {"REGEX": "(?i)^thence$"}, "OP": "?"},
+            {"TEXT": {"REGEX": "(?i)^[ns](?:[ew])?$"}},
+            {"TEXT": {"REGEX": r"^(?:\\d+(?:\\.\\d+)?|°|º|o|'|\"|-)$"}, "OP": "*"},
+            {"TEXT": {"REGEX": "(?i)^[ns](?:[ew])?$"}, "OP": "?"},
+            {"TEXT": {"REGEX": r"^\\d+(?:\\.\\d+)?$"}},
+            {
+                "LOWER": {
+                    "IN": [
+                        "feet",
+                        "foot",
+                        "ft",
+                        "meter",
+                        "meters",
+                        "m",
+                        "chain",
+                        "chains",
+                        "rod",
+                        "rods",
+                        "yard",
+                        "yards",
+                        "vara",
+                        "varas",
+                        "link",
+                        "links",
+                    ]
+                },
+                "OP": "?",
+            },
+        ],
+    },
+    {
+        "label": "DEED_CALL",
+        "pattern": [
+            {"TEXT": {"REGEX": "(?i)^thence$"}, "OP": "?"},
+            {
+                "LOWER": {
+                    "IN": [
+                        "north",
+                        "south",
+                        "east",
+                        "west",
+                        "northeast",
+                        "northwest",
+                        "southeast",
+                        "southwest",
+                    ]
+                }
+            },
+            {"TEXT": {"REGEX": r"^(?:along|with|of)$"}, "OP": "*"},
+            {"TEXT": {"REGEX": r"^\\d+(?:\\.\\d+)?$"}},
+            {
+                "LOWER": {
+                    "IN": [
+                        "feet",
+                        "foot",
+                        "ft",
+                        "meter",
+                        "meters",
+                        "m",
+                        "chain",
+                        "chains",
+                        "rod",
+                        "rods",
+                        "yard",
+                        "yards",
+                        "vara",
+                        "varas",
+                        "link",
+                        "links",
+                    ]
+                },
+                "OP": "?",
+            },
+        ],
+    },
+]
+
+_REGEX_FALLBACK_PATTERN = re.compile(
+    r"""
+    (?ix)
+    \b
+    (?:THENCE|THEN)?\s*
+    (?:
+        [NS](?:[EW])?
+        (?:
+            \s*\d{1,3}
+            (?:\s*[°ºo]\s*\d{1,2}
+                (?:\s*['′](?:\s*\d{1,2})?(?:\s*(?:"|″|''))? )?
+            )?
+        )?
+        \s*[EW]?
+        |
+        (?:NORTH|SOUTH|EAST|WEST)(?:EAST|WEST)?
+    )
+    [^A-Z0-9]{0,10}
+    \d+(?:\.\d+)?
+    \s*
+    (?:FEET|FOOT|FT|METERS?|M|CHAINS?|LINKS?|RODS?|YARDS?|VARAS?)
+    """,
+    re.VERBOSE,
+)
+
+_SPACY_AVAILABLE = importlib.util.find_spec("spacy") is not None
+spacy = importlib.import_module("spacy") if _SPACY_AVAILABLE else None
+_NLP_CACHE = None
+_ENTITY_RULER_NAME = "deed_call_ruler"
 
 
 def _strip_headers_and_footers(text: str) -> str:
@@ -343,6 +457,150 @@ def check_saved_deed_model(
     return labels
 
 
+def _ensure_entity_ruler(nlp) -> None:  # pragma: no cover - spaCy optional
+    if nlp is None:
+        return
+    existing = []
+    try:
+        existing = list(getattr(nlp, "pipe_names", []))
+    except Exception:
+        existing = []
+    if _ENTITY_RULER_NAME in existing:
+        return
+    try:
+        before = "ner" if "ner" in existing else None
+        ruler = nlp.add_pipe("entity_ruler", name=_ENTITY_RULER_NAME, before=before)
+    except Exception:
+        return
+    try:
+        ruler.add_patterns(_ENTITY_RULER_PATTERNS)
+    except Exception:
+        pass
+
+
+def _ensure_ner_label(nlp) -> None:  # pragma: no cover - spaCy optional
+    if nlp is None:
+        return
+    try:
+        pipe_names = getattr(nlp, "pipe_names", [])
+    except Exception:
+        pipe_names = []
+    if "ner" not in pipe_names:
+        return
+    try:
+        ner = nlp.get_pipe("ner")
+    except Exception:
+        return
+    add_label = getattr(ner, "add_label", None)
+    if not callable(add_label):
+        return
+    try:
+        add_label("DEED_CALL")
+    except Exception:
+        pass
+
+
+def _get_deed_nlp():  # pragma: no cover - spaCy optional
+    global _NLP_CACHE
+    if _NLP_CACHE is not None:
+        return _NLP_CACHE
+    if spacy is None:
+        _NLP_CACHE = None
+        return _NLP_CACHE
+    model_path = get_saved_deed_model_path()
+    nlp = None
+    if model_path.exists():
+        try:
+            nlp = spacy.load(model_path)
+        except Exception:
+            nlp = None
+    if nlp is None:
+        try:
+            nlp = spacy.blank("en")
+        except Exception:
+            nlp = None
+    if nlp is not None:
+        _ensure_entity_ruler(nlp)
+        _ensure_ner_label(nlp)
+    _NLP_CACHE = nlp
+    return _NLP_CACHE
+
+
+def _should_use_ner() -> bool:
+    disable_value = os.getenv("DEED_EXTRACTOR_DISABLE_NER")
+    if disable_value is None:
+        return True
+    disable_value = disable_value.strip().lower()
+    return disable_value not in {"1", "true", "yes", "on"}
+
+
+def _iter_regex_matches(window: str, *, offset: int):
+    for match in _REGEX_FALLBACK_PATTERN.finditer(window):
+        start = offset + match.start()
+        end = offset + match.end()
+        yield start, end
+
+
+def extract_calls_hybrid(
+    text: str,
+    *,
+    window_chars: int = 6000,
+    overlap_chars: int = 600,
+) -> List[dict]:
+    """Locate deed calls using spaCy NER with a regex fallback."""
+
+    cleaned = clean_text(text)
+    if not cleaned:
+        return []
+
+    use_ner = _should_use_ner()
+    nlp = _get_deed_nlp() if use_ner else None
+
+    results: List[dict] = []
+    seen_spans = set()
+
+    for window_text, start_offset in iter_windows(
+        cleaned, window_chars=window_chars, overlap_chars=overlap_chars
+    ):
+        window_spans: List[Tuple[int, int]] = []
+        if nlp is not None:
+            try:
+                doc = nlp(window_text)
+            except Exception:
+                doc = None
+            if doc is not None:
+                for ent in getattr(doc, "ents", []):
+                    if ent.label_ != "DEED_CALL":
+                        continue
+                    span_start = start_offset + int(ent.start_char)
+                    span_end = start_offset + int(ent.end_char)
+                    if span_end <= span_start:
+                        continue
+                    window_spans.append((span_start, span_end))
+
+        if not window_spans:
+            window_spans.extend(_iter_regex_matches(window_text, offset=start_offset))
+
+        for span_start, span_end in window_spans:
+            if (span_start, span_end) in seen_spans:
+                continue
+            seen_spans.add((span_start, span_end))
+            span_text = cleaned[span_start:span_end].strip()
+            if not span_text:
+                continue
+            results.append(
+                {
+                    "text": span_text,
+                    "start": span_start,
+                    "end": span_end,
+                    "label": "DEED_CALL",
+                }
+            )
+
+    results.sort(key=lambda item: item.get("start", 0))
+    return results
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deed text utilities")
     parser.add_argument(
@@ -375,6 +633,7 @@ __all__ = [
     "get_saved_deed_model_path",
     "load_saved_deed_model_meta",
     "check_saved_deed_model",
+    "extract_calls_hybrid",
     "main",
 ]
 
