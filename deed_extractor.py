@@ -14,6 +14,8 @@ from typing import Iterable, Iterator, List, Optional, Sequence, TextIO, Tuple
 
 import pandas as pd
 
+from openpyxl.utils import get_column_letter
+
 from fractions import Fraction
 
 import sys
@@ -1000,6 +1002,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
+def write_calls_xlsx(df: "pd.DataFrame", template_path: os.PathLike[str] | str, out_path: os.PathLike[str] | str) -> None:
+    """Write a deed calls workbook that follows a template layout."""
+
+    with pd.ExcelFile(template_path) as template_workbook:
+        sheet_name = template_workbook.sheet_names[0] if template_workbook.sheet_names else 0
+        template_columns = list(
+            pd.read_excel(template_workbook, sheet_name=sheet_name, nrows=0).columns
+        )
+
+    if isinstance(sheet_name, int):
+        sheet_name = "Sheet1"
+
+    if not template_columns:
+        raise ValueError("Template workbook must contain at least one column header")
+
+    ordered = df.reindex(columns=template_columns)
+
+    with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
+        ordered.to_excel(writer, index=False, sheet_name=sheet_name)
+        worksheet = writer.sheets[sheet_name]
+
+        worksheet.freeze_panes = "A2"
+
+        last_column_index = len(template_columns) if template_columns else max(len(ordered.columns), 1)
+        last_row_index = len(ordered.index) + 1 if len(ordered.index) else 1
+        last_column_letter = get_column_letter(last_column_index)
+        worksheet.auto_filter.ref = f"A1:{last_column_letter}{last_row_index}"
+
+        if "Distance_FT" in ordered.columns:
+            distance_col_index = ordered.columns.get_loc("Distance_FT") + 1
+            if last_row_index > 1:
+                for cell in worksheet.iter_rows(
+                    min_row=2,
+                    max_row=last_row_index,
+                    min_col=distance_col_index,
+                    max_col=distance_col_index,
+                ):
+                    cell[0].number_format = "#,##0.00"
+
+
 def canonicalize_df(df: "pd.DataFrame") -> "pd.DataFrame":
     """Return a DataFrame that matches the canonical deed call schema.
 
@@ -1084,6 +1126,7 @@ __all__ = [
     "extract_calls_hybrid",
     "parse_bearing",
     "normalize_distance",
+    "write_calls_xlsx",
     "canonicalize_df",
     "main",
     "NoCallsFoundError",
