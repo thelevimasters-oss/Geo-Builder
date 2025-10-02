@@ -929,6 +929,114 @@ def normalize_distance(value: str) -> float:
     return float(feet)
 
 
+def validate_training_corpus(
+    path: Path | str,
+    *,
+    lang: Optional[str] = None,
+    stream: Optional[TextIO] = None,
+) -> dict:
+    """Validate a spaCy DocBin training corpus.
+
+    Args:
+        path: Location of the serialized DocBin training data.
+        lang: Optional spaCy language code used to initialize the vocab.
+        stream: Destination for diagnostic output. Defaults to ``sys.stdout``.
+
+    Returns:
+        A dictionary containing summary statistics about the corpus.
+
+    Raises:
+        RuntimeError: If spaCy is not available in the runtime environment.
+        FileNotFoundError: If ``path`` does not exist.
+        ValueError: If the corpus contains no entities or the DEED_CALL label
+            is missing.
+    """
+
+    if not _SPACY_AVAILABLE:  # pragma: no cover - spaCy optional
+        raise RuntimeError("spaCy is required to validate training corpora.")
+
+    if path is None:
+        raise ValueError("Training corpus path is required")
+
+    resolved_path = Path(path)
+    if not resolved_path.exists():
+        raise FileNotFoundError(f"Training corpus not found: {resolved_path}")
+
+    from spacy.tokens import DocBin  # pragma: no cover - spaCy optional
+
+    output = stream or sys.stdout
+
+    doc_bin = DocBin().from_disk(resolved_path)
+
+    detected_lang: Optional[str] = None
+    try:  # pragma: no cover - spaCy optional
+        detected_lang = doc_bin.attrs.get("lang")  # type: ignore[attr-defined]
+    except Exception:
+        detected_lang = None
+
+    vocab_lang = lang or detected_lang or "en"
+
+    try:  # pragma: no cover - spaCy optional
+        vocab_source = spacy.blank(vocab_lang)
+    except Exception:
+        vocab_source = spacy.blank("en")
+
+    docs = list(doc_bin.get_docs(vocab_source.vocab))
+
+    label_counts: Counter[str] = Counter()
+    total_spans = 0
+    total_span_chars = 0
+    dropped_examples: List[Tuple[int, str, str]] = []
+
+    for doc_index, doc in enumerate(docs):
+        for ent in getattr(doc, "ents", ()):  # pragma: no branch - defensive
+            label_counts[ent.label_] += 1
+            span_length = int(ent.end_char) - int(ent.start_char)
+            total_span_chars += span_length
+            total_spans += 1
+            contracted = doc.char_span(
+                int(ent.start_char),
+                int(ent.end_char),
+                label=ent.label_,
+                alignment_mode="contract",
+            )
+            if contracted is None:
+                preview = doc.text[int(ent.start_char) : int(ent.end_char)].strip()
+                dropped_examples.append((doc_index, ent.label_, preview))
+
+    if total_spans == 0:
+        raise ValueError("Training corpus does not contain any entity spans.")
+
+    deed_call_count = label_counts.get("DEED_CALL", 0)
+    if deed_call_count == 0:
+        raise ValueError("Training corpus is missing DEED_CALL annotations.")
+
+    if dropped_examples:
+        sample_doc, sample_label, sample_text = dropped_examples[0]
+        raise ValueError(
+            "Encountered spans that cannot be aligned with alignment_mode='contract'. "
+            f"Example: doc {sample_doc}, label {sample_label!r}, text {sample_text!r}"
+        )
+
+    average_span_length = total_span_chars / total_spans if total_spans else 0.0
+
+    print(f"Validating training corpus: {resolved_path}", file=output)
+    print(f"Documents: {len(docs)}", file=output)
+    print(f"Total entities: {total_spans}", file=output)
+    print(f"Average span length (chars): {average_span_length:.2f}", file=output)
+    print("Label frequencies:", file=output)
+    for label, count in sorted(label_counts.items(), key=lambda item: (-item[1], item[0])):
+        print(f"  {label}: {count}", file=output)
+    print("All entity spans align with alignment_mode='contract'.", file=output)
+
+    return {
+        "documents": len(docs),
+        "total_entities": total_spans,
+        "average_span_length": average_span_length,
+        "label_counts": dict(label_counts),
+    }
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deed text utilities")
     parser.add_argument(
@@ -960,12 +1068,41 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=Path("deed_extractor.log"),
         help="Destination for the extraction diagnostics log.",
     )
+
+    subparsers = parser.add_subparsers(dest="command")
+    validate_parser = subparsers.add_parser(
+        "validate",
+        help="Validate a DocBin training corpus for the deed NER model.",
+    )
+    validate_parser.add_argument(
+        "--data",
+        type=Path,
+        required=True,
+        help="Path to the DocBin training corpus (e.g. training.bin).",
+    )
+    validate_parser.add_argument(
+        "--lang",
+        type=str,
+        default=None,
+        help="Optional spaCy language code for the corpus vocabulary.",
+    )
+
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
+    if getattr(args, "command", None) == "validate":
+        try:
+            validate_training_corpus(
+                args.data,
+                lang=getattr(args, "lang", None),
+            )
+        except Exception as exc:
+            print(f"Training data validation failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
     if args.check_model:
         check_saved_deed_model(args.model_path)
         return 0
@@ -1128,6 +1265,7 @@ __all__ = [
     "normalize_distance",
     "write_calls_xlsx",
     "canonicalize_df",
+    "validate_training_corpus",
     "main",
     "NoCallsFoundError",
 ]
