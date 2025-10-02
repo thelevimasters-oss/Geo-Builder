@@ -3506,6 +3506,14 @@ class App(BaseTk):
         if spacy is None:
             messagebox.showerror("spaCy not available", "spaCy is required for deed analysis and could not be installed automatically.\nInstall manually with: pip install spacy", parent=self)
             return
+        if self._ai_training_thread and self._ai_training_thread.is_alive():
+            messagebox.showinfo(
+                "AI training in progress",
+                "The deed AI model is currently training. Wait for training to finish before running a full PDF analysis.",
+                parent=self,
+            )
+            self._log("Deed AI analysis requested while training is in progress.")
+            return
         model = self._get_or_load_deed_ai_model()
         if model is None:
             messagebox.showwarning("Model unavailable", "Train the AI model or install spaCy's en_core_web_sm package.", parent=self)
@@ -3819,6 +3827,13 @@ class App(BaseTk):
     def ai_detect_calls_in_text(self):
         if spacy is None:
             messagebox.showerror("spaCy not available", "spaCy is required for the AI call detector and could not be installed automatically.\nInstall manually with: pip install spacy")
+            return
+        if self._ai_training_thread and self._ai_training_thread.is_alive():
+            messagebox.showinfo(
+                "AI training in progress",
+                "The AI call detector is currently training on new data. Please wait for training to finish before running detections.",
+            )
+            self._log("AI call detector requested while training is still running.")
             return
         model = self._get_or_load_deed_ai_model()
         if model is None:
