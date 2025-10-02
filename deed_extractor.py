@@ -11,6 +11,8 @@ import re
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Sequence, TextIO, Tuple
 
+from fractions import Fraction
+
 import sys
 
 _CHAR_NORMALIZE_MAP = {
@@ -601,6 +603,190 @@ def extract_calls_hybrid(
     return results
 
 
+_BEARING_PATTERN = re.compile(
+    r"""
+    ^\s*
+    (?P<primary>NORTH|SOUTH|N|S)
+    (?:\s+|-)*
+    (?P<angle>.+?)
+    (?:\s+|-)*
+    (?P<secondary>EAST|WEST|E|W)
+    \s*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+_NUMERIC_TOKEN_PATTERN = re.compile(
+    r"(?P<num>[-+]?\d+(?:\s+\d+/\d+)?|\d+/\d+|[-+]?\d*\.\d+)(?:\s*(?P<sym>°|''|\"|['′]))?",
+)
+
+
+def _parse_fractional_number(text: str) -> Fraction:
+    text = text.strip()
+    if not text:
+        raise ValueError("Expected a numeric value")
+    cleaned = text.replace(",", "")
+    parts = cleaned.split()
+    if not parts:
+        raise ValueError("Expected a numeric value")
+    total = Fraction(0, 1)
+    for part in parts:
+        try:
+            total += Fraction(part)
+        except (ValueError, ZeroDivisionError) as exc:  # pragma: no cover - defensive
+            raise ValueError(f"Invalid numeric component: {part}") from exc
+    return total
+
+
+def _coerce_fraction(value: Fraction) -> float | int:
+    if value.denominator == 1:
+        return int(value)
+    return float(value)
+
+
+def parse_bearing(value: str) -> dict:
+    """Parse a quadrant bearing string into its components.
+
+    Args:
+        value: Raw bearing text such as ``"S 48° 45' W"``.
+
+    Returns:
+        A dictionary containing the primary and secondary quadrant along with
+        normalized degree, minute, and second values.
+    """
+
+    if not value:
+        raise ValueError("Bearing text is required")
+
+    normalized = _normalize_special_chars(value)
+    normalized = normalized.strip()
+    if not normalized:
+        raise ValueError("Bearing text is required")
+
+    match = _BEARING_PATTERN.match(normalized)
+    if not match:
+        raise ValueError(f"Unsupported bearing format: {value!r}")
+
+    primary = match.group("primary")[0].upper()
+    secondary = match.group("secondary")[0].upper()
+    angle_text = match.group("angle") or ""
+
+    tokens = list(_NUMERIC_TOKEN_PATTERN.finditer(angle_text))
+    if not tokens:
+        raise ValueError(f"Could not parse bearing angle: {value!r}")
+
+    degrees_value: Optional[Fraction] = None
+    minutes_value: Optional[Fraction] = None
+    seconds_value: Optional[Fraction] = None
+
+    for token in tokens:
+        number_text = token.group("num")
+        symbol = token.group("sym")
+        if not number_text:
+            continue
+        magnitude = _parse_fractional_number(number_text)
+        if symbol == "°":
+            degrees_value = magnitude
+        elif symbol in {"'", "′"}:
+            minutes_value = magnitude
+        elif symbol in {"\"", "''"}:
+            seconds_value = magnitude
+        else:
+            if degrees_value is None:
+                degrees_value = magnitude
+            elif minutes_value is None:
+                minutes_value = magnitude
+            elif seconds_value is None:
+                seconds_value = magnitude
+
+    if degrees_value is None:
+        raise ValueError(f"Bearing is missing degrees: {value!r}")
+
+    if minutes_value is None:
+        minutes_value = Fraction(0, 1)
+    if seconds_value is None:
+        seconds_value = Fraction(0, 1)
+
+    total_seconds = (
+        degrees_value * Fraction(3600, 1)
+        + minutes_value * Fraction(60, 1)
+        + seconds_value
+    )
+
+    if total_seconds < 0:
+        raise ValueError("Quadrant bearings must be non-negative")
+
+    degrees = total_seconds // 3600
+    remainder = total_seconds - degrees * 3600
+    minutes = remainder // 60
+    seconds = remainder - minutes * 60
+
+    return {
+        "quadrant_1": primary,
+        "quadrant_2": secondary,
+        "degrees": _coerce_fraction(Fraction(degrees, 1)),
+        "minutes": _coerce_fraction(Fraction(minutes, 1)),
+        "seconds": _coerce_fraction(seconds),
+    }
+
+
+_DISTANCE_UNIT_TO_FEET = {
+    "foot": Fraction(1, 1),
+    "feet": Fraction(1, 1),
+    "ft": Fraction(1, 1),
+    "rod": Fraction(33, 2),
+    "rods": Fraction(33, 2),
+    "rd": Fraction(33, 2),
+    "rds": Fraction(33, 2),
+    "pole": Fraction(33, 2),
+    "poles": Fraction(33, 2),
+    "perch": Fraction(33, 2),
+    "perches": Fraction(33, 2),
+    "chain": Fraction(66, 1),
+    "chains": Fraction(66, 1),
+    "ch": Fraction(66, 1),
+    "chs": Fraction(66, 1),
+    "vara": Fraction(25, 9),
+    "varas": Fraction(25, 9),
+}
+
+
+def normalize_distance(value: str) -> float:
+    """Convert deed distance strings into feet.
+
+    Args:
+        value: Distance text such as ``"28 1/2 rods"``.
+
+    Returns:
+        The numeric distance in feet.
+    """
+
+    if not value:
+        raise ValueError("Distance text is required")
+
+    normalized = _normalize_special_chars(value).strip().lower()
+    if not normalized:
+        raise ValueError("Distance text is required")
+
+    number_match = re.search(r"[-+]?\d+(?:\s+\d+/\d+)?|\d+/\d+|[-+]?\d*\.\d+", normalized)
+    if not number_match:
+        raise ValueError(f"Could not find numeric distance in {value!r}")
+
+    magnitude_text = number_match.group(0)
+    magnitude = _parse_fractional_number(magnitude_text)
+
+    unit_text = normalized[number_match.end() :].strip().strip(".;,)")
+    unit_match = re.match(r"([a-z]+)", unit_text)
+    unit_key = unit_match.group(1) if unit_match else "ft"
+
+    conversion = _DISTANCE_UNIT_TO_FEET.get(unit_key)
+    if conversion is None:
+        raise ValueError(f"Unsupported distance unit: {unit_key!r}")
+
+    feet = magnitude * conversion
+    return float(feet)
+
+
 def _build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Deed text utilities")
     parser.add_argument(
@@ -634,6 +820,8 @@ __all__ = [
     "load_saved_deed_model_meta",
     "check_saved_deed_model",
     "extract_calls_hybrid",
+    "parse_bearing",
+    "normalize_distance",
     "main",
 ]
 
