@@ -1,40 +1,45 @@
 # Geo-Builder
 
-Geo-Builder is a desktop companion for PlotClonjurer AI users who need to build XML geometry files from spreadsheet data. The tool ships as a single Python application that can be launched with a themed Tk GUI or invoked from the command line for unattended conversions.
+Geo-Builder is a desktop and command-line companion for PlotClonjurer AI users who need to turn survey spreadsheets and deeds into OpenRoads-ready geometry. The tool ships as a single Python application with supporting helpers that can be launched with a themed Tk GUI or invoked from the terminal for unattended conversions.
 
-## Features
+## Key capabilities
 
-- **Excel → XML conversion** – Create a valid OpenRoads geometry XML file from one or more worksheets. Each sheet is treated as a separate geometry with the worksheet name used as the geometry name.
-- **Configurable settings** – Control input/output units (feet, meters, rods, chains) and choose between DMS and decimal bearing formats.
-- **Modern Tk interface** – Dark/light theming, drag-and-drop support (when `tkinterdnd2` is installed), live status hints, and an activity log console.
-- **Deed PDF helper** – Parse bearings, distances, and curve data from a deed PDF, pre-analyze and highlight detected calls in the editable text, export the interpreted data to Excel, and feed it back into the converter. Text extraction uses `pdfplumber`/`PyMuPDF` with an optional Tesseract OCR fallback.
-- **Graceful degradation** – Optional capabilities (icons, drag-and-drop, PDF parsing, OCR) are skipped automatically if their dependencies are unavailable.
-
-## Requirements
-
-- Python 3.9 or newer (Tkinter is required for the GUI).
-- Mandatory libraries for Excel conversion: `pandas`, `openpyxl`.
-- Optional libraries that enhance the experience:
-  - `Pillow` – display bundled icons and images.
-  - `pdfplumber` or `PyMuPDF` (`fitz`) – extract text from deed PDFs.
-  - `pytesseract` + Tesseract binary – OCR fallback for scanned PDFs. Set `GEO_BUILDER_TESSERACT`, `TESSERACT_PATH`, `TESSERACT_CMD`, or `TESSERACT_EXE` to point at the executable if it is not on `PATH`.
-  - `tkinterdnd2` – drag-and-drop file input in the GUI.
+- **Spreadsheet → XML conversion** – Transform one or more worksheets into OpenRoads geometry XML with per-sheet geometries, bearing/unit conversions, and validation feedback in the log panel.
+- **Configurable workspace** – Persist GUI settings such as theme, units, bearing format, Tesseract location, and preferred State Plane Coordinate System. Optional `pyproj` transforms export coordinates directly into the selected SPCS.
+- **Interactive parcel preview** – When `matplotlib` is available the GUI renders a live parcel sketch, highlights problem calls, and lets you export a DXF parcel via `ezdxf`.
+- **Deed PDF workbench** – Extract deed text with `pdfplumber`/`PyMuPDF`, fall back to OCR through `pytesseract` + `pdf2image`, highlight detected calls, and send curated results back into the converter or save them to Excel/CSV.
+- **AI-assisted deed parsing** – Bundle regex heuristics with an optional spaCy NER model. Train models directly inside the app, monitor progress, generate HTML training reports, and reuse saved pipelines.
+- **Graceful degradation** – Optional capabilities (icons, drag-and-drop, PDF parsing, OCR, AI, preview, DXF export) are skipped automatically when their dependencies are missing. Startup diagnostics attempt to install/download missing spaCy assets when possible.
 
 ## Installation
 
-```bash
-python -m venv .venv
-source .venv/bin/activate  # On Windows use: .venv\\Scripts\\activate
-pip install pandas openpyxl  # install optional extras as needed
-```
+Geo-Builder targets Python 3.9 or newer and relies on Tkinter being available (included with most CPython builds).
 
-Install any optional integrations you need, for example:
+1. Create and activate a virtual environment:
 
-```bash
-pip install pillow pdfplumber pymupdf pytesseract tkinterdnd2
-```
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
 
-If you plan to use OCR, install Tesseract from your platform's package manager. The tool now auto-detects `tesseract` when it is on `PATH`, and you can still point to a custom binary from the settings dialog if needed.
+2. Install the core requirements for Excel conversion:
+
+   ```bash
+   pip install pandas openpyxl
+   ```
+
+3. Add optional extras based on the features you need:
+
+   ```bash
+   pip install pillow pdfplumber pymupdf pdf2image pytesseract tkinterdnd2 spacy spacy-lookups-data pyproj ezdxf matplotlib
+   ```
+
+   - Install Tesseract OCR from your platform's package manager when using OCR features. Set `GEO_BUILDER_TESSERACT`, `TESSERACT_PATH`, `TESSERACT_CMD`, or `TESSERACT_EXE` if the binary is not on `PATH`.
+   - After installing spaCy, download the default English model once:
+
+     ```bash
+     python -m spacy download en_core_web_sm
+     ```
 
 ## Usage
 
@@ -44,7 +49,7 @@ If you plan to use OCR, install Tesseract from your platform's package manager. 
 python "OpenRoads_Geometry_Builder_Tool (1).py"
 ```
 
-From the GUI you can configure defaults, browse for Excel workbooks, review conversion logs, and access the Deed PDF helper tab.
+From the GUI you can configure defaults, drag-and-drop workbooks (when `tkinterdnd2` is installed), review live conversion logs, inspect parcel previews, export DXF parcels, and access the Deed PDF and Deed AI tabs.
 
 ### Command-line conversion
 
@@ -58,26 +63,59 @@ python "OpenRoads_Geometry_Builder_Tool (1).py" INPUT.xlsx OUTPUT.xml \
     [--quiet]
 ```
 
-The command validates that the source workbook exists and creates any missing folders for the target XML file. A summary reporting the number of sheets, rows, lines, and curves processed is printed when the conversion completes.
+The command validates file paths, creates any missing output folders, applies requested unit conversions, and prints a summary counting sheets, rows, lines, and curves processed.
 
-## Project structure
+### Deed AI workflow
+
+1. Use the **Deed PDF** tab to ingest a deed, run extraction/OCR, and review detected calls in the editable grid.
+2. Optional: highlight uncertain calls, adjust values, and export the cleaned worksheet for reuse in the converter.
+3. Configure an AI training library (paired PDFs and labeled Excel files) and start model training directly from the settings dialog.
+4. Once trained, run the **Deed AI** tab to extract calls with the spaCy model, export detected spans to CSV, or feed them back into your spreadsheets.
+
+## Optional dependency quick reference
+
+| Feature | Dependency |
+| --- | --- |
+| Icons and theming assets | `Pillow` |
+| Drag-and-drop file loading | `tkinterdnd2` |
+| PDF text extraction | `pdfplumber` or `PyMuPDF` (`fitz`) |
+| OCR fallback | `pytesseract`, Tesseract binary, and optionally `pdf2image` + Poppler |
+| Parcel preview plot | `matplotlib` |
+| DXF parcel export | `ezdxf` |
+| Coordinate reprojection | `pyproj` |
+| Deed AI (NER) | `spacy`, `spacy-lookups-data`, trained model in `deed_ner_model/` |
+
+## Repository layout
 
 ```
 .
-├── README.md
-└── OpenRoads_Geometry_Builder_Tool (1).py
+├── OpenRoads_Geometry_Builder_Tool (1).py  # GUI + CLI entry point
+├── deed_extractor.py                       # Deed text normalization and AI helpers
+├── deed_ner_model/                         # Bundled spaCy model/metadata cache
+├── tests/                                  # Pytest suite (doctests + extraction helpers)
+└── README.md
 ```
 
-All functionality resides in a single script, making it easy to bundle or freeze with tools such as `pyinstaller` if you prefer a standalone executable.
+## Testing
+
+Run the automated checks with:
+
+```bash
+pytest
+```
+
+The tests exercise deed extraction helpers and doctest coverage for the supporting utilities.
+
+## Troubleshooting
+
+- On Windows, the application can auto-detect or prompt for the Tesseract binary. Use the settings dialog or environment variables if detection fails.
+- If spaCy is installed without the English model, the startup dependency check will attempt to download it. Offline environments should install the model beforehand.
+- Optional integrations are detected dynamically—features tied to missing libraries remain hidden or are disabled with explanatory hints.
 
 ## Contributing
 
-Issues and pull requests are welcome! If you plan to contribute code, please:
-
-1. Create a virtual environment and install the dependencies.
-2. Run the script locally to verify your changes in both GUI and CLI modes.
-3. Format and lint your code before opening a pull request.
+Issues and pull requests are welcome! Before submitting, create a virtual environment, install the dependencies relevant to your change, exercise both the GUI and CLI flows, and run the test suite.
 
 ## License
 
-This project has not declared a license. If you intend to use it commercially, please contact the original authors or maintainers to clarify licensing terms.
+This project has not declared a license. If you intend to use it commercially, contact the original authors or maintainers to clarify licensing terms.
