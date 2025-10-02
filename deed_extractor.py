@@ -10,6 +10,7 @@ import os
 import re
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Sequence, TextIO, Tuple
+from collections import Counter
 
 from fractions import Fraction
 
@@ -175,6 +176,27 @@ _SPACY_AVAILABLE = importlib.util.find_spec("spacy") is not None
 spacy = importlib.import_module("spacy") if _SPACY_AVAILABLE else None
 _NLP_CACHE = None
 _ENTITY_RULER_NAME = "deed_call_ruler"
+
+
+class NoCallsFoundError(RuntimeError):
+    """Raised when no deed calls are detected after hybrid extraction."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        total_chars: int,
+        window_count: int,
+        preview: str,
+        cue_words: Sequence[str],
+        log_path: Optional[Path] = None,
+    ) -> None:
+        super().__init__(message)
+        self.total_chars = total_chars
+        self.window_count = window_count
+        self.preview = preview
+        self.cue_words = list(cue_words)
+        self.log_path = Path(log_path) if log_path is not None else None
 
 
 def _strip_headers_and_footers(text: str) -> str:
@@ -543,28 +565,116 @@ def _iter_regex_matches(window: str, *, offset: int):
         yield start, end
 
 
+def _format_no_calls_message(
+    *,
+    total_chars: int,
+    window_count: int,
+    preview: str,
+    cue_words: Sequence[str],
+) -> str:
+    cues = ", ".join(cue_words) if cue_words else "none"
+    preview_text = preview or ""
+    return (
+        "No deed calls were found after applying NER and regex.\n"
+        f"Characters/windows: {total_chars}/{window_count}\n"
+        f"Cue words: {cues}\n"
+        f"Cleaned preview (first 200 chars): {preview_text}"
+    )
+
+
+def _write_extraction_log(
+    log_path: Path,
+    *,
+    total_chars: int,
+    window_count: int,
+    extractor_counts: Counter,
+    rows: List[dict],
+) -> None:
+    """Persist extraction diagnostics to a log file."""
+
+    log_lines = [
+        f"total_chars={total_chars}",
+        f"window_count={window_count}",
+        f"result_count={len(rows)}",
+    ]
+
+    for source in sorted(extractor_counts):
+        log_lines.append(f"{source}_count={extractor_counts[source]}")
+
+    log_lines.append("rows:")
+    for index, row in enumerate(rows, start=1):
+        snippet = row.get("text", "").replace("\n", " ")
+        source = row.get("source", "unknown")
+        start = row.get("start", "?")
+        end = row.get("end", "?")
+        log_lines.append(
+            f"{index}\tsource={source}\tstart={start}\tend={end}\ttext={snippet}"
+        )
+
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("w", encoding="utf-8") as log_file:
+            log_file.write("\n".join(log_lines) + "\n")
+    except Exception:
+        # Logging must never break the extractor; failures are silently ignored.
+        pass
+
+
 def extract_calls_hybrid(
     text: str,
     *,
     window_chars: int = 6000,
     overlap_chars: int = 600,
+    log_path: Optional[Path] = None,
 ) -> List[dict]:
     """Locate deed calls using spaCy NER with a regex fallback."""
 
     cleaned = clean_text(text)
-    if not cleaned:
-        return []
+    total_chars = len(cleaned)
+    cue_words_found = sorted({word.upper() for word in _CUE_WORD_PATTERN.findall(cleaned)})
+    preview = cleaned[:200]
+    if len(cleaned) > 200:
+        preview += "..."
+
+    resolved_log_path = Path(log_path) if log_path is not None else Path("deed_extractor.log")
 
     use_ner = _should_use_ner()
     nlp = _get_deed_nlp() if use_ner else None
 
     results: List[dict] = []
     seen_spans = set()
+    extractor_counts: Counter = Counter({"ner": 0, "regex": 0})
+    log_rows: List[dict] = []
+    window_count = 0
+
+    if not cleaned:
+        _write_extraction_log(
+            resolved_log_path,
+            total_chars=total_chars,
+            window_count=window_count,
+            extractor_counts=extractor_counts,
+            rows=log_rows,
+        )
+        message = _format_no_calls_message(
+            total_chars=total_chars,
+            window_count=window_count,
+            preview=preview,
+            cue_words=cue_words_found,
+        )
+        raise NoCallsFoundError(
+            message,
+            total_chars=total_chars,
+            window_count=window_count,
+            preview=preview,
+            cue_words=cue_words_found,
+            log_path=resolved_log_path,
+        )
 
     for window_text, start_offset in iter_windows(
         cleaned, window_chars=window_chars, overlap_chars=overlap_chars
     ):
-        window_spans: List[Tuple[int, int]] = []
+        window_count += 1
+        window_spans: List[Tuple[int, int, str]] = []
         if nlp is not None:
             try:
                 doc = nlp(window_text)
@@ -578,28 +688,56 @@ def extract_calls_hybrid(
                     span_end = start_offset + int(ent.end_char)
                     if span_end <= span_start:
                         continue
-                    window_spans.append((span_start, span_end))
+                    window_spans.append((span_start, span_end, "ner"))
 
-        if not window_spans:
-            window_spans.extend(_iter_regex_matches(window_text, offset=start_offset))
+        if not any(source == "ner" for _, _, source in window_spans):
+            for span_start, span_end in _iter_regex_matches(window_text, offset=start_offset):
+                window_spans.append((span_start, span_end, "regex"))
 
-        for span_start, span_end in window_spans:
+        for span_start, span_end, source in window_spans:
             if (span_start, span_end) in seen_spans:
                 continue
             seen_spans.add((span_start, span_end))
             span_text = cleaned[span_start:span_end].strip()
             if not span_text:
                 continue
-            results.append(
-                {
-                    "text": span_text,
-                    "start": span_start,
-                    "end": span_end,
-                    "label": "DEED_CALL",
-                }
-            )
+            row = {
+                "text": span_text,
+                "start": span_start,
+                "end": span_end,
+                "label": "DEED_CALL",
+                "source": source,
+            }
+            results.append(row)
+            log_rows.append(row)
+            extractor_counts[source] += 1
 
     results.sort(key=lambda item: item.get("start", 0))
+
+    _write_extraction_log(
+        resolved_log_path,
+        total_chars=total_chars,
+        window_count=window_count,
+        extractor_counts=extractor_counts,
+        rows=log_rows,
+    )
+
+    if not results:
+        message = _format_no_calls_message(
+            total_chars=total_chars,
+            window_count=window_count,
+            preview=preview,
+            cue_words=cue_words_found,
+        )
+        raise NoCallsFoundError(
+            message,
+            total_chars=total_chars,
+            window_count=window_count,
+            preview=preview,
+            cue_words=cue_words_found,
+            log_path=resolved_log_path,
+        )
+
     return results
 
 
@@ -800,6 +938,24 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional override for the deed AI model directory.",
     )
+    parser.add_argument(
+        "--text",
+        type=str,
+        default=None,
+        help="Raw deed text to analyze for bearings and distances.",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Optional Excel workbook path for extracted calls.",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=Path,
+        default=Path("deed_extractor.log"),
+        help="Destination for the extraction diagnostics log.",
+    )
     return parser
 
 
@@ -808,6 +964,35 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     args = parser.parse_args(argv)
     if args.check_model:
         check_saved_deed_model(args.model_path)
+        return 0
+    if args.text is not None:
+        try:
+            calls = extract_calls_hybrid(
+                args.text,
+                log_path=args.log_file,
+            )
+        except NoCallsFoundError as exc:
+            message_lines = [str(exc)]
+            if exc.log_path is not None:
+                message_lines.append(f"Extraction log written to: {exc.log_path}")
+            print("\n".join(message_lines), file=sys.stderr)
+            return 2
+        if args.out is not None:
+            try:
+                import pandas as pd
+            except Exception as exc:
+                print(f"Cannot write Excel output without pandas: {exc}", file=sys.stderr)
+                return 1
+            df = pd.DataFrame(calls)
+            try:
+                df.to_excel(args.out, index=False)
+            except Exception as exc:
+                print(f"Failed to write Excel file {args.out}: {exc}", file=sys.stderr)
+                return 1
+            print(f"Wrote {len(calls)} calls to {args.out}")
+        else:
+            print(json.dumps(calls, indent=2))
+        print(f"Extraction log written to: {args.log_file}")
         return 0
     parser.print_help()
     return 0
@@ -823,6 +1008,7 @@ __all__ = [
     "parse_bearing",
     "normalize_distance",
     "main",
+    "NoCallsFoundError",
 ]
 
 
