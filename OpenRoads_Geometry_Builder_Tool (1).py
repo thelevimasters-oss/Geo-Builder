@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from deed_extractor import iter_windows
+from deed_extractor import iter_windows, expand_span_to_line
 
 TESSERACT_ENV_VARS = (
     "GEO_BUILDER_TESSERACT",
@@ -2068,22 +2068,53 @@ def generate_training_report_html(stats: Dict[str, Any]) -> str:
 """
     return html_content
 def extract_deed_calls_with_model(nlp_model, text: str) -> List[Tuple[str, Tuple[int, int]]]:
-    if nlp_model is None or not text:
+    if not text:
         return []
-    spans: List[Tuple[int, int, str]] = []
+
     text_length = len(text)
-    for window_text, offset in iter_windows(text):
-        if not window_text:
-            continue
-        doc = nlp_model(window_text)
-        for ent in getattr(doc, "ents", ()):  # type: ignore[attr-defined]
-            if ent.label_ != "DEED_CALL":
+
+    def _model_supports_label() -> bool:
+        if nlp_model is None:
+            return False
+        try:
+            pipe_names = getattr(nlp_model, "pipe_names", [])
+            if "ner" not in pipe_names:
+                return False
+            ner = nlp_model.get_pipe("ner")
+            labels = getattr(ner, "labels", None)
+            return bool(labels and "DEED_CALL" in labels)
+        except Exception:
+            return False
+
+    spans: List[Tuple[int, int, str]] = []
+    if _model_supports_label():
+        for window_text, offset in iter_windows(text):
+            if not window_text:
                 continue
-            start = offset + int(ent.start_char)
-            end = offset + int(ent.end_char)
-            start = max(0, min(text_length, start))
-            end = max(start, min(text_length, end))
-            spans.append((start, end, ent.label_))
+            try:
+                doc = nlp_model(window_text)
+            except Exception:
+                doc = None
+            if doc is None:
+                continue
+            for ent in getattr(doc, "ents", ()):  # type: ignore[attr-defined]
+                if ent.label_ != "DEED_CALL":
+                    continue
+                start = offset + int(ent.start_char)
+                end = offset + int(ent.end_char)
+                start = max(0, min(text_length, start))
+                end = max(start, min(text_length, end))
+                spans.append((start, end, "DEED_CALL"))
+
+    if not spans:
+        try:
+            fallback_spans = find_call_spans_in_text(text)
+        except Exception:
+            fallback_spans = []
+        for start, end, _ in fallback_spans:
+            start = max(0, min(text_length, int(start)))
+            end = max(start, min(text_length, int(end)))
+            spans.append((start, end, "DEED_CALL"))
 
     if not spans:
         return []
@@ -2118,8 +2149,10 @@ def extract_deed_calls_with_model(nlp_model, text: str) -> List[Tuple[str, Tuple
     merged.sort(key=lambda item: (item[0], item[1]))
     calls: List[Tuple[str, Tuple[int, int]]] = []
     for start, end, _ in merged:
-        snippet_raw = text[start:end]
-        snippet = snippet_raw.strip() or snippet_raw
+        snippet = expand_span_to_line(text, start, end).strip()
+        if not snippet:
+            snippet_raw = text[start:end]
+            snippet = snippet_raw.strip() or snippet_raw
         calls.append((snippet, (start, end)))
     return calls
 
