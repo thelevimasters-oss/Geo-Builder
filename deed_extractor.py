@@ -174,6 +174,46 @@ def get_saved_deed_model_path(base_path: Optional[Path] = None) -> Path:
     return root / _DEFAULT_MODEL_DIRNAME
 
 
+def expand_span_to_line(text: str, start: int, end: int, *, context_chars: int = 80) -> str:
+    """Expand a span to the surrounding call line.
+
+    Args:
+        text: Source text containing the span.
+        start: Start index of the span.
+        end: End index of the span.
+        context_chars: Number of characters to expand on each side when the
+            span is not bounded by newlines.
+
+    Returns:
+        A string containing the surrounding line when the text contains
+        newline-delimited lines. If no newline boundaries exist, a substring
+        expanded by ``context_chars`` characters on each side is returned.
+    """
+
+    if not text:
+        return ""
+
+    text_length = len(text)
+    start = max(0, min(start, text_length))
+    end = max(start, min(end, text_length))
+
+    line_start = text.rfind("\n", 0, start)
+    line_end = text.find("\n", end)
+
+    if line_start != -1 or line_end != -1:
+        if line_start == -1:
+            line_start = 0
+        else:
+            line_start += 1
+        if line_end == -1:
+            line_end = text_length
+        return text[line_start:line_end].strip()
+
+    window_start = max(0, start - context_chars)
+    window_end = min(text_length, end + context_chars)
+    return text[window_start:window_end].strip()
+
+
 def _read_model_meta(model_path: Path) -> dict:
     meta_path = model_path / _MODEL_META_FILENAME
     if not meta_path.exists():
