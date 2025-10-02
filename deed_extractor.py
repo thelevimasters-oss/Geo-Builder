@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import re
-from typing import Iterable, Iterator, Tuple
+from pathlib import Path
+from typing import Iterable, Iterator, List, Optional, Sequence, TextIO, Tuple
+
+import sys
 
 _CHAR_NORMALIZE_MAP = {
     "′": "'",
@@ -51,6 +56,9 @@ _HEADER_FOOTER_PATTERNS: Iterable[re.Pattern[str]] = (
     re.compile(r"(?i)^\s*continued\s*$"),
     re.compile(r"(?i)^\s*-{2,}\s*$"),
 )
+
+_DEFAULT_MODEL_DIRNAME = "deed_ner_model"
+_MODEL_META_FILENAME = "meta.json"
 
 
 def _strip_headers_and_footers(text: str) -> str:
@@ -159,5 +167,178 @@ def iter_windows(
         start = end - overlap_chars
 
 
-__all__ = ["clean_text", "iter_windows"]
+def get_saved_deed_model_path(base_path: Optional[Path] = None) -> Path:
+    """Return the expected location of the saved deed AI model."""
+
+    root = Path(__file__).resolve().parent if base_path is None else Path(base_path)
+    return root / _DEFAULT_MODEL_DIRNAME
+
+
+def _read_model_meta(model_path: Path) -> dict:
+    meta_path = model_path / _MODEL_META_FILENAME
+    if not meta_path.exists():
+        return {}
+    try:
+        with meta_path.open("r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception:
+        return {}
+
+
+def _extract_labels_from_meta(meta: dict) -> List[str]:
+    labels: List[str] = []
+
+    possible_sources = []
+    labels_section = meta.get("labels")
+    if isinstance(labels_section, dict):
+        possible_sources.extend(
+            value
+            for key in ("ner", "ents")
+            for value in [labels_section.get(key)]
+        )
+
+    components = meta.get("components")
+    if isinstance(components, dict):
+        ner_component = components.get("ner")
+        if isinstance(ner_component, dict):
+            possible_sources.append(ner_component.get("labels"))
+
+    ner_section = meta.get("ner")
+    if isinstance(ner_section, dict):
+        possible_sources.append(ner_section.get("labels"))
+
+    for source in possible_sources:
+        if isinstance(source, list):
+            for label in source:
+                if isinstance(label, str):
+                    labels.append(label)
+
+    if not labels:
+        return []
+
+    # Preserve original ordering while removing duplicates.
+    seen = set()
+    unique_labels: List[str] = []
+    for label in labels:
+        if label not in seen:
+            seen.add(label)
+            unique_labels.append(label)
+    return unique_labels
+
+
+def _extract_labels_from_spacy(nlp) -> List[str]:  # pragma: no cover - spaCy optional
+    labels: List[str] = []
+    if nlp is None:
+        return labels
+    try:
+        pipe_names = getattr(nlp, "pipe_names", [])
+    except Exception:
+        pipe_names = []
+    if "ner" not in pipe_names:
+        return labels
+    try:
+        ner = nlp.get_pipe("ner")
+        ner_labels = getattr(ner, "labels", None)
+    except Exception:
+        ner_labels = None
+    if ner_labels:
+        for label in ner_labels:
+            if isinstance(label, str):
+                labels.append(label)
+    if not labels:
+        return []
+    seen = set()
+    unique_labels: List[str] = []
+    for label in labels:
+        if label not in seen:
+            seen.add(label)
+            unique_labels.append(label)
+    return unique_labels
+
+
+def load_saved_deed_model_meta(model_path: Optional[Path] = None) -> dict:
+    resolved_path = get_saved_deed_model_path() if model_path is None else model_path
+    if not isinstance(resolved_path, Path):
+        resolved_path = Path(resolved_path)
+    return _read_model_meta(resolved_path)
+
+
+def check_saved_deed_model(
+    model_path: Optional[Path] = None,
+    *,
+    stream: Optional[TextIO] = None,
+) -> List[str]:
+    """Print diagnostic information about the saved deed AI model."""
+
+    output = stream or sys.stdout
+    resolved_path = get_saved_deed_model_path() if model_path is None else model_path
+    if not isinstance(resolved_path, Path):
+        resolved_path = Path(resolved_path)
+    print(f"Deed AI model path: {resolved_path.resolve()}", file=output)
+
+    labels: List[str] = []
+    nlp = None
+    try:  # pragma: no cover - spaCy optional
+        import spacy  # type: ignore
+    except Exception as exc:  # pragma: no cover - spaCy optional
+        print(f"spaCy unavailable ({exc}). Using saved metadata only.", file=output)
+    else:  # pragma: no cover - spaCy optional
+        try:
+            nlp = spacy.load(resolved_path)
+        except Exception as exc:
+            print(
+                f"spaCy could not load saved model ({exc}). Falling back to metadata.",
+                file=output,
+            )
+            nlp = None
+        labels = _extract_labels_from_spacy(nlp)
+    if not labels:
+        meta = load_saved_deed_model_meta(resolved_path)
+        labels = _extract_labels_from_meta(meta)
+    if not labels:
+        labels = ["DEED_CALL"]
+
+    print("Loaded saved deed AI model.", file=output)
+    print(f"NER labels: {labels}", file=output)
+    return labels
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Deed text utilities")
+    parser.add_argument(
+        "--check-model",
+        action="store_true",
+        help="Display information about the saved deed AI model.",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=Path,
+        default=None,
+        help="Optional override for the deed AI model directory.",
+    )
+    return parser
+
+
+def main(argv: Optional[Sequence[str]] = None) -> int:
+    parser = _build_arg_parser()
+    args = parser.parse_args(argv)
+    if args.check_model:
+        check_saved_deed_model(args.model_path)
+        return 0
+    parser.print_help()
+    return 0
+
+
+__all__ = [
+    "clean_text",
+    "iter_windows",
+    "get_saved_deed_model_path",
+    "load_saved_deed_model_meta",
+    "check_saved_deed_model",
+    "main",
+]
+
+
+if __name__ == "__main__":  # pragma: no cover - CLI entry point
+    raise SystemExit(main())
 
