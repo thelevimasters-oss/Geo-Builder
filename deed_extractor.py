@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from typing import Iterable
+from typing import Iterable, Iterator, Tuple
 
 _CHAR_NORMALIZE_MAP = {
     "′": "'",
@@ -119,5 +119,45 @@ def clean_text(raw: str) -> str:
     return text.strip()
 
 
-__all__ = ["clean_text"]
+
+
+def iter_windows(
+    text: str,
+    window_chars: int = 6000,
+    overlap_chars: int = 600,
+) -> Iterator[Tuple[str, int]]:
+    """Yield overlapping text windows to avoid silently truncating long docs.
+
+    Args:
+        text: The full text to segment.
+        window_chars: Maximum number of characters per window.
+        overlap_chars: Number of characters of overlap between consecutive
+            windows. Must be smaller than ``window_chars``.
+
+    Yields:
+        Tuples of ``(window_text, start_offset)`` where ``start_offset`` is the
+        index of the window's first character in the original ``text``.
+    """
+
+    if not text:
+        return
+
+    if window_chars <= 0:
+        raise ValueError("window_chars must be a positive integer")
+    if overlap_chars < 0:
+        raise ValueError("overlap_chars must be zero or a positive integer")
+    if overlap_chars >= window_chars:
+        raise ValueError("overlap_chars must be smaller than window_chars to allow progress")
+
+    text_length = len(text)
+    start = 0
+    while start < text_length:
+        end = min(text_length, start + window_chars)
+        yield text[start:end], start
+        if end >= text_length:
+            break
+        start = end - overlap_chars
+
+
+__all__ = ["clean_text", "iter_windows"]
 
