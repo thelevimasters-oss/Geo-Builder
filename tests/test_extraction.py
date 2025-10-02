@@ -98,3 +98,16 @@ def test_canonicalize_df_start_end_labels() -> None:
 
     assert list(canonical["Start_End"]) == ["BEGIN", "END"]
     assert list(canonical["Sequence"]) == [1, 2]
+
+
+def test_normalize_distance_handles_decimal_values() -> None:
+    result = deed_extractor.normalize_distance("15.25 ft.")
+    assert result == pytest.approx(15.25)
+
+
+def test_normalize_distance_preserves_fractional_values() -> None:
+    half_foot = deed_extractor.normalize_distance("1/2 ft")
+    assert half_foot == pytest.approx(0.5)
+
+    mixed_fraction = deed_extractor.normalize_distance("28 1/2 rods")
+    assert mixed_fraction == pytest.approx(470.25)
