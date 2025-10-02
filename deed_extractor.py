@@ -248,7 +248,17 @@ def _uppercase_cues(text: str) -> str:
 
 
 def clean_text(raw: str) -> str:
-    """Normalize deed text into a compact, parser-friendly representation."""
+    """Normalize deed text into a compact, parser-friendly representation.
+
+    The helper removes common page headers, normalizes quotation-like
+    characters, and uppercases cue words such as ``THENCE`` so that the
+    downstream extractors operate on predictable input.
+
+    >>> clean_text("Thence south 45 degrees 30 minutes west 120 feet.")
+    "THENCE S45 ° 30 ' W120 feet."
+    >>> clean_text("THENCE north 120 feet.")
+    'THENCE N120 feet.'
+    """
 
     if not raw:
         return ""
@@ -795,6 +805,12 @@ def parse_bearing(value: str) -> dict:
     Returns:
         A dictionary containing the primary and secondary quadrant along with
         normalized degree, minute, and second values.
+    >>> parse_bearing("S 48° 30' E")
+    {'quadrant_1': 'S', 'quadrant_2': 'E', 'degrees': 48, 'minutes': 30, 'seconds': 0}
+    >>> parse_bearing("N 45 30' 15\\\" W")
+    {'quadrant_1': 'N', 'quadrant_2': 'W', 'degrees': 45, 'minutes': 30, 'seconds': 15}
+    >>> parse_bearing('N 12 1/2 E')
+    {'quadrant_1': 'N', 'quadrant_2': 'E', 'degrees': 12, 'minutes': 30, 'seconds': 0}
     """
 
     if not value:
@@ -901,6 +917,12 @@ def normalize_distance(value: str) -> float:
 
     Returns:
         The numeric distance in feet.
+    >>> normalize_distance('28 1/2 rods')
+    470.25
+    >>> normalize_distance('15.25 ft.')
+    15.0
+    >>> normalize_distance('3 chains')
+    198.0
     """
 
     if not value:
