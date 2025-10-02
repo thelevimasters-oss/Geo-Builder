@@ -183,6 +183,18 @@ _NLP_CACHE = None
 _ENTITY_RULER_NAME = "deed_call_ruler"
 
 
+def update_deed_model_cache(nlp=None) -> None:
+    """Replace or clear the cached spaCy pipeline used for deed extraction.
+
+    Args:
+        nlp: A spaCy ``Language`` pipeline to cache. Passing ``None`` clears
+            the cache so the next extraction attempt reloads from disk.
+    """
+
+    global _NLP_CACHE
+    _NLP_CACHE = nlp
+
+
 class NoCallsFoundError(RuntimeError):
     """Raised when no deed calls are detected after hybrid extraction."""
 

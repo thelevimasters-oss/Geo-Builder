@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
 
-from deed_extractor import iter_windows, expand_span_to_line
+from deed_extractor import iter_windows, expand_span_to_line, update_deed_model_cache
 
 TESSERACT_ENV_VARS = (
     "GEO_BUILDER_TESSERACT",
@@ -1587,6 +1587,7 @@ def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
     }
     if output_dir:
         training_stats["model_path"] = str(output_dir)
+    update_deed_model_cache(nlp)
     return nlp, training_stats
 
 
