@@ -8,9 +8,11 @@ import importlib.util
 import json
 import os
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Iterable, Iterator, List, Optional, Sequence, TextIO, Tuple
-from collections import Counter
+
+import pandas as pd
 
 from fractions import Fraction
 
@@ -998,6 +1000,81 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return 0
 
 
+def canonicalize_df(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Return a DataFrame that matches the canonical deed call schema.
+
+    The canonical schema enforces a predictable column order, assigns
+    sequential identifiers, and annotates rows that correspond to the
+    beginning or ending of a deed description.
+    """
+
+    required_columns = [
+        "DocID",
+        "Sequence",
+        "RawCall",
+        "Bearing",
+        "AngleDeg",
+        "AngleMin",
+        "AngleSec",
+        "Quadrant1",
+        "Quadrant2",
+        "Distance_FT",
+        "Unit_Original",
+        "Monument",
+        "Start_End",
+        "SourcePage",
+        "CharStart",
+        "CharEnd",
+        "Extractor",
+        "Confidence",
+    ]
+
+    canonical = df.copy()
+
+    # Ensure columns needed for sorting exist before sequencing.
+    if "SourcePage" not in canonical.columns:
+        canonical["SourcePage"] = None
+    if "CharStart" not in canonical.columns:
+        canonical["CharStart"] = None
+
+    if not canonical.empty:
+        canonical = canonical.sort_values(
+            by=["SourcePage", "CharStart"],
+            kind="mergesort",
+            na_position="last",
+        ).reset_index(drop=True)
+        canonical["Sequence"] = range(1, len(canonical) + 1)
+    else:
+        canonical["Sequence"] = pd.Series(dtype="int64")
+
+    # Determine which rows correspond to the beginning or end of the calls.
+    start_end_markers: List[str] = [""] * len(canonical)
+    if "RawCall" in canonical.columns and not canonical.empty:
+        raw_call = canonical["RawCall"].fillna("").astype(str)
+
+        begin_mask = raw_call.str.contains(r"\bBEGINNING\b", case=False, na=False)
+        if begin_mask.any():
+            begin_index = begin_mask[begin_mask].index[0]
+            start_end_markers[begin_index] = "BEGIN"
+
+        end_mask = raw_call.str.contains(r"to\s+the\s+beginning", case=False, na=False)
+        if end_mask.any():
+            end_index = end_mask[end_mask].index[-1]
+            if start_end_markers[end_index]:
+                start_end_markers[end_index] = f"{start_end_markers[end_index]};END"
+            else:
+                start_end_markers[end_index] = "END"
+
+    canonical["Start_End"] = start_end_markers
+
+    for column in required_columns:
+        if column not in canonical.columns:
+            canonical[column] = None
+
+    canonical = canonical[required_columns]
+    return canonical
+
+
 __all__ = [
     "clean_text",
     "iter_windows",
@@ -1007,6 +1084,7 @@ __all__ = [
     "extract_calls_hybrid",
     "parse_bearing",
     "normalize_distance",
+    "canonicalize_df",
     "main",
     "NoCallsFoundError",
 ]
