@@ -936,7 +936,7 @@ def normalize_distance(value: str) -> float:
     >>> normalize_distance('28 1/2 rods')
     470.25
     >>> normalize_distance('15.25 ft.')
-    15.0
+    15.25
     >>> normalize_distance('3 chains')
     198.0
     """
@@ -948,7 +948,10 @@ def normalize_distance(value: str) -> float:
     if not normalized:
         raise ValueError("Distance text is required")
 
-    number_match = re.search(r"[-+]?\d+(?:\s+\d+/\d+)?|\d+/\d+|[-+]?\d*\.\d+", normalized)
+    number_match = re.search(
+        r"[-+]?(?:\d*\.\d+|\d+/\d+|\d+(?:\s+\d+/\d+)?)",
+        normalized,
+    )
     if not number_match:
         raise ValueError(f"Could not find numeric distance in {value!r}")
 
