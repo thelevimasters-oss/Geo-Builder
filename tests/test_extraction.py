@@ -38,6 +38,16 @@ def reset_nlp_cache():
     deed_extractor._NLP_CACHE = None
 
 
+def test_update_deed_model_cache_replaces_cache() -> None:
+    sentinel = object()
+
+    deed_extractor.update_deed_model_cache(sentinel)
+    assert deed_extractor._NLP_CACHE is sentinel
+
+    deed_extractor.update_deed_model_cache()
+    assert deed_extractor._NLP_CACHE is None
+
+
 def test_extract_calls_hybrid_uses_entity_ruler(monkeypatch: pytest.MonkeyPatch) -> None:
     raw_call = "Thence north 10 degrees east 120 feet."
     cleaned_call = deed_extractor.clean_text(raw_call)
