@@ -23,7 +23,7 @@ This script is built to degrade gracefully if optional packages are missing:
 """
 
 import os
-import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess, shutil, threading
+import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess, shutil, threading, time, html
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -120,6 +120,17 @@ class ProcessResult:
     points_rel: List[Tuple[float, float]]
     points_abs: List[Tuple[float, float]]
     segments: List[ParcelSegment]
+
+
+@dataclass
+class DeedTrainingData:
+    examples: List[Tuple[str, Dict[str, Any]]]
+    document_names: List[str]
+    annotation_counts: List[int]
+
+    @property
+    def total_annotations(self) -> int:
+        return sum(self.annotation_counts)
 
 
 def _scroll_units_from_event(event) -> int:
@@ -1420,16 +1431,18 @@ def _find_span_in_text(text: str, snippet: str, used_ranges: List[Tuple[int, int
         search_start = idx + len(lower_snippet)
 
 
-def load_deed_training_dataset(library_folder: Path, tesseract_path: Optional[str] = None, logger=None) -> List[Tuple[str, Dict[str, Any]]]:
+def load_deed_training_dataset(library_folder: Path, tesseract_path: Optional[str] = None, logger=None) -> DeedTrainingData:
     """Load OCR text and labeled deed call spans from a training library folder."""
     if pandas is None:
         raise RuntimeError("pandas is required to read labeled Excel files. Install with: pip install pandas openpyxl")
-    dataset: List[Tuple[str, Dict[str, Any]]] = []
+    examples: List[Tuple[str, Dict[str, Any]]] = []
+    document_names: List[str] = []
+    annotation_counts: List[int] = []
     pdf_paths = sorted(library_folder.glob("*.pdf"))
     if not pdf_paths:
         if logger:
             logger("No PDF files found in training folder.")
-        return dataset
+        return DeedTrainingData(examples, document_names, annotation_counts)
     for pdf_path in pdf_paths:
         excel_path = None
         stem = pdf_path.stem
@@ -1473,25 +1486,30 @@ def load_deed_training_dataset(library_folder: Path, tesseract_path: Optional[st
                 continue
             used_ranges.append((start, end))
             entities.append((start, end, "DEED_CALL"))
-        if not entities:
+        annotation_count = len(entities)
+        if not annotation_count:
             if logger:
                 logger(f"No valid annotations produced for {pdf_path.name}; skipping document.")
             continue
-        dataset.append((text, {"entities": entities}))
+        examples.append((text, {"entities": entities}))
+        document_names.append(pdf_path.name)
+        annotation_counts.append(annotation_count)
         if logger:
-            logger(f"Prepared {len(entities)} labeled call(s) from {pdf_path.name}.")
-    return dataset
+            logger(f"Prepared {annotation_count} labeled call(s) from {pdf_path.name}.")
+    return DeedTrainingData(examples, document_names, annotation_counts)
 
 
 def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
                            output_dir: Optional[Path] = None,
                            base_model: str = "en_core_web_sm",
-                           logger=None):
-    """Train or fine-tune a spaCy NER model for deed calls."""
+                           logger=None) -> Tuple[Any, Dict[str, Any]]:
+    """Train or fine-tune a spaCy NER model for deed calls and return the trained model and statistics."""
     if spacy is None or Example is None:
         raise RuntimeError("spaCy with training support is required. Install with: pip install spacy")
     if not dataset:
         raise ValueError("No training data provided for model training.")
+    started_at = datetime.datetime.now()
+    start_clock = time.perf_counter()
     try:
         if base_model:
             if ensure_spacy_model(base_model):
@@ -1500,10 +1518,12 @@ def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
                 raise OSError
         else:
             raise OSError
+        using_pretrained_base = True
     except Exception:
         nlp = spacy.blank("en")
         if logger:
             logger("Falling back to blank English spaCy model.")
+        using_pretrained_base = False
     ensure_spacy_lexeme_norm(nlp, logger=logger)
     if "ner" not in nlp.pipe_names:
         ner = nlp.add_pipe("ner")
@@ -1513,6 +1533,7 @@ def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
         ner.add_label("DEED_CALL")
 
     examples: List[Example] = []
+    total_annotations = 0
     for text, annotations in dataset:
         doc = nlp.make_doc(text)
         spans = []
@@ -1520,6 +1541,7 @@ def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
             span = doc.char_span(start, end, label=label)
             if span is not None:
                 spans.append(span)
+        total_annotations += len(spans)
         if not spans:
             continue
         formatted = {"entities": [(span.start_char, span.end_char, span.label_) for span in spans]}
@@ -1531,6 +1553,7 @@ def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
     with nlp.disable_pipes(*other_pipes):
         optimizer = nlp.initialize(lambda: examples)
         epochs = 10
+        loss_history: List[float] = []
         for epoch in range(epochs):
             random.shuffle(examples)
             losses = {}
@@ -1539,15 +1562,509 @@ def train_deed_spacy_model(dataset: List[Tuple[str, Dict[str, Any]]],
             if logger:
                 loss_val = losses.get("ner", 0.0)
                 logger(f"Epoch {epoch + 1}/{epochs} → NER loss={loss_val:.4f}")
+            loss_history.append(float(losses.get("ner", 0.0)))
 
     if output_dir:
         output_dir.mkdir(parents=True, exist_ok=True)
         nlp.to_disk(output_dir)
         if logger:
             logger(f"Model saved to {output_dir}")
-    return nlp
+    completed_at = datetime.datetime.now()
+    duration_seconds = time.perf_counter() - start_clock
+    training_stats = {
+        "documents": len(dataset),
+        "total_annotations": total_annotations,
+        "epochs": epochs,
+        "loss_history": loss_history,
+        "final_loss": loss_history[-1] if loss_history else None,
+        "base_model": base_model,
+        "using_pretrained_base": using_pretrained_base,
+        "started_at": started_at.isoformat(timespec="seconds"),
+        "completed_at": completed_at.isoformat(timespec="seconds"),
+        "duration_seconds": duration_seconds,
+    }
+    if output_dir:
+        training_stats["model_path"] = str(output_dir)
+    return nlp, training_stats
 
 
+TRAINING_GOALS = [
+    {
+        "key": "documents",
+        "label": "Annotated documents",
+        "goal": 3,
+        "comparison": ">=",
+        "format": "int",
+        "description": "Recommended minimum number of labeled deeds for a stable model.",
+    },
+    {
+        "key": "total_annotations",
+        "label": "Total labeled calls",
+        "goal": 60,
+        "comparison": ">=",
+        "format": "int",
+        "description": "Aim for at least sixty annotated calls across the training set.",
+    },
+    {
+        "key": "average_annotations",
+        "label": "Average calls per document",
+        "goal": 10,
+        "comparison": ">=",
+        "format": "float1",
+        "description": "Each deed should contribute a healthy number of labeled calls.",
+    },
+    {
+        "key": "final_loss",
+        "label": "Final NER loss",
+        "goal": 0.30,
+        "comparison": "<=",
+        "format": "float4",
+        "description": "Lower is better; values under 0.30 generally indicate good convergence.",
+    },
+]
+
+
+def _format_report_timestamp(value: Optional[str]) -> str:
+    if not value:
+        return "N/A"
+    if isinstance(value, datetime.datetime):
+        dt_value = value
+    else:
+        try:
+            dt_value = datetime.datetime.fromisoformat(str(value))
+        except Exception:
+            return str(value)
+    display = dt_value.strftime("%B %d, %Y %H:%M:%S")
+    if dt_value.tzinfo and dt_value.tzname():
+        display += f" {dt_value.tzname()}"
+    return display
+
+
+def _format_report_duration(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "N/A"
+    try:
+        return str(datetime.timedelta(seconds=round(float(seconds))))
+    except Exception:
+        return str(seconds)
+
+
+def _format_goal_value(value: Optional[float], fmt: str) -> str:
+    if value is None:
+        return "N/A"
+    try:
+        if fmt == "int":
+            return f"{int(round(float(value)))}"
+        if fmt == "float1":
+            return f"{float(value):.1f}"
+        if fmt == "float2":
+            return f"{float(value):.2f}"
+        if fmt == "float4":
+            return f"{float(value):.4f}"
+    except Exception:
+        return str(value)
+    return str(value)
+
+
+def _goal_met(value: Optional[float], goal_value: float, comparison: str) -> Optional[bool]:
+    if value is None:
+        return None
+    try:
+        value = float(value)
+    except Exception:
+        return None
+    if comparison == ">=":
+        return value >= goal_value
+    if comparison == ">":
+        return value > goal_value
+    if comparison == "<=":
+        return value <= goal_value
+    if comparison == "<":
+        return value < goal_value
+    if comparison == "==":
+        return value == goal_value
+    return None
+
+
+def _render_loss_svg(loss_history: List[float]) -> str:
+    if not loss_history:
+        return ""
+    width = 640
+    height = 260
+    margin = 36
+    inner_width = width - (margin * 2)
+    inner_height = height - (margin * 2)
+    max_loss = max(loss_history)
+    min_loss = min(loss_history)
+    if max_loss == min_loss:
+        max_loss = max_loss or 1.0
+        min_loss = 0.0
+    step = inner_width / max(1, len(loss_history) - 1)
+    points = []
+    circles = []
+    labels = []
+    for idx, loss in enumerate(loss_history):
+        x = margin + (idx * step)
+        ratio = 0.0 if max_loss == min_loss else (loss - min_loss) / (max_loss - min_loss)
+        y = margin + (inner_height * (1 - ratio))
+        points.append(f"{x:.2f},{y:.2f}")
+        circles.append(f'<circle cx="{x:.2f}" cy="{y:.2f}" r="4" class="loss-point" />')
+        labels.append(
+            f'<text x="{x:.2f}" y="{(y - 12):.2f}" class="loss-label">{loss:.3f}</text>'
+        )
+    polyline = " ".join(points)
+    horizontal_lines = []
+    for fraction in (0, 0.25, 0.5, 0.75, 1.0):
+        y = margin + (inner_height * (1 - fraction))
+        horizontal_lines.append(
+            f'<line x1="{margin}" y1="{y:.2f}" x2="{width - margin}" y2="{y:.2f}" class="grid" />'
+        )
+    y_labels = []
+    for fraction, label in zip((1.0, 0.5, 0.0), (max_loss, (max_loss + min_loss) / 2, min_loss)):
+        y = margin + (inner_height * (1 - fraction))
+        y_labels.append(f'<text x="{margin - 12}" y="{y + 4:.2f}" class="axis-label">{label:.3f}</text>')
+    epoch_labels = []
+    for idx in range(len(loss_history)):
+        x = margin + (idx * step)
+        epoch_labels.append(f'<text x="{x:.2f}" y="{height - margin + 20}" class="axis-label">{idx + 1}</text>')
+    svg = (
+        f'<svg viewBox="0 0 {width} {height}" role="img" aria-label="NER loss per training epoch">'
+        f'<rect x="{margin}" y="{margin}" width="{inner_width}" height="{inner_height}" class="chart-area" />'
+        + "".join(horizontal_lines)
+        + f'<polyline points="{polyline}" class="loss-line" />'
+        + "".join(circles)
+        + "".join(labels)
+        + "".join(y_labels)
+        + "".join(epoch_labels)
+        + f'<text x="{margin}" y="{margin - 12}" class="axis-title">Loss</text>'
+        + f'<text x="{width - margin}" y="{height - margin + 32}" class="axis-title">Epoch</text>'
+        + "</svg>"
+    )
+    return svg
+
+
+def generate_training_report_html(stats: Dict[str, Any]) -> str:
+    title = "Geo-Builder Deed AI Training Report"
+    started_display = _format_report_timestamp(stats.get("started_at"))
+    completed_display = _format_report_timestamp(stats.get("completed_at"))
+    duration_display = _format_report_duration(stats.get("duration_seconds"))
+    documents = int(round(stats.get("documents", 0))) if stats.get("documents") is not None else 0
+    total_annotations = int(round(stats.get("total_annotations", 0))) if stats.get("total_annotations") is not None else 0
+    average_annotations = stats.get("average_annotations", 0.0) or 0.0
+    base_model = stats.get("base_model") or "en_core_web_sm"
+    using_pretrained = stats.get("using_pretrained_base", True)
+    loss_history = stats.get("loss_history", []) or []
+    first_loss = loss_history[0] if loss_history else None
+    final_loss = stats.get("final_loss")
+    loss_delta = None
+    if loss_history and len(loss_history) > 1:
+        loss_delta = loss_history[0] - loss_history[-1]
+    model_path = stats.get("model_path")
+    goal_rows = []
+    met_count = 0
+    for goal in TRAINING_GOALS:
+        value = stats.get(goal["key"])
+        formatted_value = _format_goal_value(value, goal.get("format", ""))
+        formatted_goal = _format_goal_value(goal.get("goal"), goal.get("format", ""))
+        met = _goal_met(value, goal["goal"], goal["comparison"])
+        status_class = "goal-missing"
+        status_text = "Not available"
+        if met is True:
+            status_class = "goal-pass"
+            status_text = "Met"
+            met_count += 1
+        elif met is False:
+            status_class = "goal-warn"
+            status_text = "Needs attention"
+        goal_rows.append(
+            {
+                "label": goal["label"],
+                "value": formatted_value,
+                "goal": formatted_goal,
+                "status_class": status_class,
+                "status_text": status_text,
+                "description": goal.get("description", ""),
+            }
+        )
+
+    goal_summary = f"{met_count} of {len(TRAINING_GOALS)} training goals met."
+    svg_chart = _render_loss_svg(loss_history)
+    document_rows = []
+    doc_details = stats.get("document_details") or []
+    for detail in doc_details:
+        name = html.escape(str(detail.get("name", "Unnamed")))
+        annotations = int(round(detail.get("annotations", 0)))
+        percent = 0.0
+        if total_annotations:
+            percent = (annotations / total_annotations) * 100
+        document_rows.append(
+            {
+                "name": name,
+                "annotations": annotations,
+                "percent": percent,
+            }
+        )
+
+    summary_notes: List[str] = []
+    summary_notes.append(goal_summary)
+    if final_loss is not None:
+        summary_notes.append(f"Final NER loss: {final_loss:.4f}")
+    if loss_delta is not None:
+        summary_notes.append(f"Loss improvement: {loss_delta:.4f}")
+    summary_notes.append(
+        f"Training data coverage: {documents} document(s) with {total_annotations} labeled calls (avg {average_annotations:.1f} per document)."
+    )
+
+    base_model_text = "Fine-tuned pretrained model" if using_pretrained else "Initialized from blank English model"
+    model_path_display = html.escape(str(model_path)) if model_path else "Not saved"
+
+    summary_list_items = "".join(f"<li>{html.escape(note)}</li>" for note in summary_notes)
+    goal_table_rows = "".join(
+        f"<tr><th scope=\"row\">{html.escape(row['label'])}</th>"
+        f"<td>{row['value']}</td>"
+        f"<td>{row['goal']}</td>"
+        f"<td class=\"{row['status_class']}\">{row['status_text']}</td>"
+        f"<td>{html.escape(row['description'])}</td></tr>"
+        for row in goal_rows
+    )
+    document_table_rows = "".join(
+        f"<tr><th scope=\"row\">{row['name']}</th>"
+        f"<td>{row['annotations']}</td>"
+        f"<td><div class=\"progress\"><span style=\"width:{row['percent']:.1f}%\"></span></div></td>"
+        f"<td>{row['percent']:.1f}%</td></tr>"
+        for row in document_rows
+    )
+    empty_document_row = "<tr><td colspan=\"4\" class=\"muted\">No document-level statistics were captured.</td></tr>"
+    document_table_body = document_table_rows or empty_document_row
+    chart_section = svg_chart or "<p class=\"muted\">Loss metrics were unavailable for this training session.</p>"
+
+    html_content = f"""<!DOCTYPE html>
+<html lang=\"en\">
+<head>
+  <meta charset=\"utf-8\">
+  <title>{html.escape(title)}</title>
+  <style>
+    :root {{
+      --primary: #0F3320;
+      --accent: #84BD00;
+      --surface: #ffffff;
+      --surface-alt: #f4f6f8;
+      --text: #1e2a24;
+      --text-muted: #5f6f63;
+      --border: #d7ded9;
+      --warn: #c75d00;
+    }}
+    body {{
+      margin: 0;
+      font-family: 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
+      background: var(--surface-alt);
+      color: var(--text);
+    }}
+    .container {{
+      max-width: 960px;
+      margin: 40px auto;
+      padding: 32px;
+      background: var(--surface);
+      border-radius: 16px;
+      box-shadow: 0 12px 32px rgba(15, 51, 32, 0.15);
+    }}
+    header h1 {{
+      margin: 0;
+      font-size: 2.2rem;
+      color: var(--primary);
+    }}
+    header p {{
+      margin: 8px 0 0;
+      color: var(--text-muted);
+    }}
+    .summary-grid {{
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 16px;
+      margin-top: 24px;
+    }}
+    .card {{
+      background: var(--surface-alt);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 20px;
+    }}
+    .card h2 {{
+      margin-top: 0;
+      font-size: 1rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+    }}
+    .card p {{
+      font-size: 1.4rem;
+      margin: 8px 0 0;
+      font-weight: 600;
+    }}
+    .card span {{
+      display: block;
+      margin-top: 6px;
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }}
+    section {{
+      margin-top: 32px;
+    }}
+    section h2 {{
+      margin-bottom: 12px;
+      color: var(--primary);
+      font-size: 1.4rem;
+    }}
+    ul.summary {{
+      padding-left: 20px;
+      color: var(--text);
+    }}
+    ul.summary li {{
+      margin-bottom: 6px;
+    }}
+    table {{
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+    }}
+    th, td {{
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      padding: 12px;
+    }}
+    th {{
+      font-weight: 600;
+      color: var(--text);
+    }}
+    .goal-pass {{
+      color: var(--primary);
+      font-weight: 600;
+    }}
+    .goal-warn {{
+      color: var(--warn);
+      font-weight: 600;
+    }}
+    .goal-missing {{
+      color: var(--text-muted);
+      font-weight: 600;
+    }}
+    .muted {{
+      color: var(--text-muted);
+      font-style: italic;
+    }}
+    .progress {{
+      position: relative;
+      background: var(--surface-alt);
+      border-radius: 999px;
+      height: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+    }}
+    .progress span {{
+      display: block;
+      height: 100%;
+      background: var(--accent);
+    }}
+    svg {{
+      width: 100%;
+      height: auto;
+      background: var(--surface);
+    }}
+    .chart-area {{
+      fill: var(--surface-alt);
+      stroke: var(--border);
+      stroke-width: 1;
+    }}
+    .loss-line {{
+      fill: none;
+      stroke: var(--accent);
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+    }}
+    .loss-point {{
+      fill: var(--primary);
+      stroke: var(--surface);
+      stroke-width: 1.5;
+    }}
+    .loss-label {{
+      font-size: 0.8rem;
+      fill: var(--text-muted);
+      text-anchor: middle;
+    }}
+    .grid {{
+      stroke: var(--border);
+      stroke-width: 1;
+      stroke-dasharray: 4 6;
+    }}
+    .axis-label {{
+      font-size: 0.75rem;
+      fill: var(--text-muted);
+      text-anchor: middle;
+    }}
+    .axis-title {{
+      font-size: 0.75rem;
+      fill: var(--text-muted);
+      text-anchor: start;
+    }}
+  </style>
+</head>
+<body>
+  <div class=\"container\">
+    <header>
+      <h1>{html.escape(title)}</h1>
+      <p>Training completed on {html.escape(completed_display)} &middot; Duration {html.escape(duration_display)}</p>
+    </header>
+    <div class=\"summary-grid\">
+      <div class=\"card\">
+        <h2>Training window</h2>
+        <p>{html.escape(duration_display)}</p>
+        <span>Started: {html.escape(started_display)}</span>
+        <span>Completed: {html.escape(completed_display)}</span>
+      </div>
+      <div class=\"card\">
+        <h2>Data coverage</h2>
+        <p>{documents} document(s)</p>
+        <span>{total_annotations} labeled calls</span>
+        <span>Avg {average_annotations:.1f} calls / document</span>
+      </div>
+      <div class=\"card\">
+        <h2>Model artifact</h2>
+        <p>{html.escape(base_model_text)}</p>
+        <span>Source model: {html.escape(base_model)}</span>
+        <span>Saved to: {model_path_display}</span>
+      </div>
+    </div>
+    <section>
+      <h2>Training highlights</h2>
+      <ul class=\"summary\">{summary_list_items}</ul>
+    </section>
+    <section>
+      <h2>Goal thresholds</h2>
+      <table>
+        <thead>
+          <tr><th scope=\"col\">Metric</th><th scope=\"col\">Current</th><th scope=\"col\">Goal</th><th scope=\"col\">Status</th><th scope=\"col\">Notes</th></tr>
+        </thead>
+        <tbody>{goal_table_rows}</tbody>
+      </table>
+    </section>
+    <section>
+      <h2>Training loss</h2>
+      <div class=\"chart\">{chart_section}</div>
+      <p class=\"muted\">Loss values reflect the named entity recognizer's convergence across epochs.</p>
+    </section>
+    <section>
+      <h2>Document coverage</h2>
+      <table>
+        <thead><tr><th scope=\"col\">Document</th><th scope=\"col\">Labeled calls</th><th scope=\"col\">Distribution</th><th scope=\"col\">Share</th></tr></thead>
+        <tbody>{document_table_body}</tbody>
+      </table>
+    </section>
+  </div>
+</body>
+</html>
+"""
+    return html_content
 def extract_deed_calls_with_model(nlp_model, text: str) -> List[Tuple[str, Tuple[int, int]]]:
     if nlp_model is None or not text:
         return []
@@ -2750,7 +3267,7 @@ class App(BaseTk):
             )
             return
         try:
-            dataset = load_deed_training_dataset(
+            training_data = load_deed_training_dataset(
                 folder_path,
                 tesseract_path=self.settings.get("tesseract_path"),
                 logger=self._log,
@@ -2759,7 +3276,7 @@ class App(BaseTk):
             messagebox.showerror("Training failed", str(exc), parent=parent or self)
             self._log(f"AI training failed: {exc}")
             return
-        if not dataset:
+        if not training_data.examples:
             messagebox.showinfo(
                 "No training data",
                 "No labeled deed calls were found in the selected folder.",
@@ -2767,7 +3284,7 @@ class App(BaseTk):
             )
             return
 
-        documents = len(dataset)
+        documents = len(training_data.examples)
         self._log(f"Starting AI model training with {documents} document(s)…")
         if parent and hasattr(parent, "show_ai_training_progress"):
             try:
@@ -2781,15 +3298,29 @@ class App(BaseTk):
 
         def _worker():
             try:
-                train_deed_spacy_model(
-                    dataset,
+                _, training_stats = train_deed_spacy_model(
+                    training_data.examples,
                     output_dir=self.deed_ai_model_path,
                     logger=thread_logger,
                 )
             except Exception as exc:
                 self.after(0, lambda e=exc: self._on_ai_training_done(parent, documents, error=e))
                 return
-            self.after(0, lambda: self._on_ai_training_done(parent, documents))
+            combined_stats = dict(training_stats or {})
+            combined_stats.update({
+                "documents": documents,
+                "document_names": list(training_data.document_names),
+                "annotations_per_document": list(training_data.annotation_counts),
+                "total_annotations": training_data.total_annotations,
+                "average_annotations": (training_data.total_annotations / documents) if documents else 0.0,
+                "training_folder": str(folder_path),
+            })
+            combined_stats.setdefault("document_details", [
+                {"name": name, "annotations": count}
+                for name, count in zip(training_data.document_names, training_data.annotation_counts)
+            ])
+            combined_stats.setdefault("model_path", str(self.deed_ai_model_path))
+            self.after(0, lambda s=combined_stats: self._on_ai_training_done(parent, documents, stats=s))
 
         self._ai_training_thread = threading.Thread(target=_worker, daemon=True)
         self._ai_training_thread.start()
@@ -2825,7 +3356,7 @@ class App(BaseTk):
         except Exception:
             pass
 
-    def _on_ai_training_done(self, parent, documents: int, error: Optional[Exception] = None):
+    def _on_ai_training_done(self, parent, documents: int, stats: Optional[Dict[str, Any]] = None, error: Optional[Exception] = None):
         self._ai_training_thread = None
         self._stop_ai_training_progress()
         if parent and hasattr(parent, "hide_ai_training_progress"):
@@ -2838,12 +3369,57 @@ class App(BaseTk):
             self._log(f"AI training failed: {error}")
             return
         self.deed_ai_model = None
+        report_path = None
+        if stats:
+            try:
+                report_path = self._write_ai_training_report(stats)
+                if report_path:
+                    stats["report_path"] = str(report_path)
+                    self._log(f"Training report saved → {report_path}")
+            except Exception as exc:
+                self._log(f"Failed to generate training report: {exc}")
+        message_lines = [f"Model trained with {documents} document(s)."]
+        if stats and stats.get("final_loss") is not None:
+            try:
+                message_lines.append(f"Final NER loss: {float(stats['final_loss']):.4f}")
+            except Exception:
+                message_lines.append(f"Final NER loss: {stats['final_loss']}")
+        if report_path:
+            message_lines.append(f"Report saved to:\n{report_path}")
         messagebox.showinfo(
             "Training complete",
-            f"Model trained with {documents} document(s).",
+            "\n".join(message_lines),
             parent=parent or self,
         )
         self._log("Deed AI model trained successfully.")
+        if stats and stats.get("final_loss") is not None:
+            try:
+                self._log(f"Final NER loss: {float(stats['final_loss']):.4f}")
+            except Exception:
+                self._log(f"Final NER loss: {stats['final_loss']}")
+
+    def _write_ai_training_report(self, stats: Dict[str, Any]) -> Optional[Path]:
+        folder_value = stats.get("training_folder")
+        if not folder_value:
+            return None
+        try:
+            report_dir = Path(folder_value)
+        except Exception:
+            return None
+        try:
+            report_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            self._log(f"Unable to prepare training folder for report: {exc}")
+            return None
+        timestamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        report_path = report_dir / f"training_report_{timestamp}.html"
+        try:
+            html_content = generate_training_report_html(stats)
+            report_path.write_text(html_content, encoding="utf-8")
+        except Exception as exc:
+            self._log(f"Failed to write training report: {exc}")
+            return None
+        return report_path
 
     def run_deed_ai_analysis(self):
         if spacy is None:
