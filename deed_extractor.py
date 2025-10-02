@@ -6,6 +6,7 @@ import argparse
 import importlib
 import importlib.util
 import json
+import logging
 import os
 import re
 from collections import Counter
@@ -630,8 +631,21 @@ def extract_calls_hybrid(
     window_chars: int = 6000,
     overlap_chars: int = 600,
     log_path: Optional[Path] = None,
+    use_ner: Optional[bool] = None,
+    regex_fallback: bool = True,
 ) -> List[dict]:
-    """Locate deed calls using spaCy NER with a regex fallback."""
+    """Locate deed calls using spaCy NER with an optional regex fallback.
+
+    Args:
+        text: Raw deed description text to analyze.
+        window_chars: Maximum number of characters per sliding window.
+        overlap_chars: Number of characters that overlap between windows.
+        log_path: Destination for the extraction diagnostics log.
+        use_ner: Force enabling/disabling the spaCy model. ``None`` keeps the
+            environment-controlled default.
+        regex_fallback: When ``True`` the regex extractor supplements missing
+            NER spans. Disable to require NER results only.
+    """
 
     cleaned = clean_text(text)
     total_chars = len(cleaned)
@@ -642,8 +656,10 @@ def extract_calls_hybrid(
 
     resolved_log_path = Path(log_path) if log_path is not None else Path("deed_extractor.log")
 
-    use_ner = _should_use_ner()
-    nlp = _get_deed_nlp() if use_ner else None
+    use_ner_flag = _should_use_ner() if use_ner is None else bool(use_ner)
+    nlp = _get_deed_nlp() if use_ner_flag else None
+    if use_ner is True and nlp is None:
+        raise RuntimeError("spaCy model is unavailable for NER extraction.")
 
     results: List[dict] = []
     seen_spans = set()
@@ -694,7 +710,7 @@ def extract_calls_hybrid(
                         continue
                     window_spans.append((span_start, span_end, "ner"))
 
-        if not any(source == "ner" for _, _, source in window_spans):
+        if regex_fallback and not any(source == "ner" for _, _, source in window_spans):
             for span_start, span_end in _iter_regex_matches(window_text, offset=start_offset):
                 window_spans.append((span_start, span_end, "regex"))
 
@@ -1037,24 +1053,125 @@ def validate_training_corpus(
     }
 
 
-def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Deed text utilities")
-    parser.add_argument(
-        "--check-model",
-        action="store_true",
-        help="Display information about the saved deed AI model.",
+_VALID_MODELS = {"hybrid", "ner", "regex"}
+
+
+def extract_calls_with_model(
+    model: str,
+    text: str,
+    *,
+    log_path: Optional[Path] = None,
+) -> List[dict]:
+    """Dispatch deed extraction according to the selected model."""
+
+    normalized = (model or "").strip().lower()
+    if not normalized:
+        normalized = "hybrid"
+    if normalized == "hybrid":
+        return extract_calls_hybrid(text, log_path=log_path)
+    if normalized == "regex":
+        return extract_calls_hybrid(text, log_path=log_path, use_ner=False)
+    if normalized == "ner":
+        return extract_calls_hybrid(
+            text,
+            log_path=log_path,
+            use_ner=True,
+            regex_fallback=False,
+        )
+    raise ValueError(f"Unsupported model: {model}")
+
+
+def _load_pdf_text(pdf_path: Path) -> str:
+    pdf_path = Path(pdf_path)
+    if not pdf_path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+    if pdf_path.is_dir():
+        raise IsADirectoryError(f"Expected a PDF file, got directory: {pdf_path}")
+
+    logger = logging.getLogger(__name__)
+    text_chunks: List[str] = []
+
+    try:  # pragma: no cover - optional dependency
+        import pdfplumber  # type: ignore
+    except Exception:
+        pdfplumber = None
+
+    if pdfplumber is not None:  # pragma: no cover - optional dependency
+        try:
+            with pdfplumber.open(str(pdf_path)) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text() or ""
+                    if page_text:
+                        text_chunks.append(page_text)
+        except Exception as exc:
+            logger.debug("pdfplumber extraction failed: %s", exc)
+        else:
+            combined = "\n".join(text_chunks).strip()
+            if combined:
+                return combined
+            text_chunks.clear()
+
+    try:  # pragma: no cover - optional dependency
+        import fitz  # type: ignore
+    except Exception:
+        fitz = None
+
+    if fitz is not None:  # pragma: no cover - optional dependency
+        try:
+            document = fitz.open(str(pdf_path))
+        except Exception as exc:
+            logger.debug("PyMuPDF open failed for %s: %s", pdf_path, exc)
+        else:
+            try:
+                for page in document:
+                    try:
+                        page_text = page.get_text()
+                    except Exception as exc:
+                        logger.debug("PyMuPDF get_text failed: %s", exc)
+                        continue
+                    if page_text:
+                        text_chunks.append(page_text)
+            finally:
+                document.close()
+            combined = "\n".join(text_chunks).strip()
+            if combined:
+                return combined
+
+    raise RuntimeError(
+        "Unable to extract text from PDF. Install pdfplumber or PyMuPDF (pymupdf)."
+    )
+
+
+def _load_cli_text(args: argparse.Namespace) -> str:
+    if getattr(args, "text", None) is not None:
+        return str(args.text)
+    pdf_value = getattr(args, "pdf", None)
+    if pdf_value is not None:
+        return _load_pdf_text(Path(pdf_value))
+    raise ValueError("Either --text or --pdf must be provided")
+
+
+def _build_cli_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Extract deed calls from text or PDF sources.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument(
-        "--model-path",
+        "--model",
+        type=str,
+        default="hybrid",
+        help="Extraction model to use (hybrid, ner, regex).",
+    )
+    source_group = parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
+        "--pdf",
         type=Path,
-        default=None,
-        help="Optional override for the deed AI model directory.",
+        help="Path to a deed PDF file to analyze.",
     )
-    parser.add_argument(
+    source_group.add_argument(
         "--text",
         type=str,
-        default=None,
-        help="Raw deed text to analyze for bearings and distances.",
+        help="Raw deed text to analyze.",
     )
     parser.add_argument(
         "--out",
@@ -1063,79 +1180,108 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         help="Optional Excel workbook path for extracted calls.",
     )
     parser.add_argument(
-        "--log-file",
+        "--template",
+        type=Path,
+        default=None,
+        help="Excel template used to order columns when writing output.",
+    )
+    parser.add_argument(
+        "--log",
         type=Path,
         default=Path("deed_extractor.log"),
         help="Destination for the extraction diagnostics log.",
     )
-
-    subparsers = parser.add_subparsers(dest="command")
-    validate_parser = subparsers.add_parser(
-        "validate",
-        help="Validate a DocBin training corpus for the deed NER model.",
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose logging for troubleshooting.",
     )
-    validate_parser.add_argument(
-        "--data",
-        type=Path,
-        required=True,
-        help="Path to the DocBin training corpus (e.g. training.bin).",
-    )
-    validate_parser.add_argument(
-        "--lang",
-        type=str,
-        default=None,
-        help="Optional spaCy language code for the corpus vocabulary.",
-    )
-
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = _build_arg_parser()
+    parser = _build_cli_parser()
     args = parser.parse_args(argv)
-    if getattr(args, "command", None) == "validate":
+
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(message)s",
+    )
+    logger = logging.getLogger(__name__)
+
+    model_choice = (args.model or "").strip().lower()
+    if not model_choice:
+        model_choice = "hybrid"
+    if model_choice not in _VALID_MODELS:
+        print(
+            f"Unsupported model {args.model!r}. Choose from: {', '.join(sorted(_VALID_MODELS))}.",
+            file=sys.stderr,
+        )
+        return 4
+
+    try:
+        text_value = _load_cli_text(args)
+    except (FileNotFoundError, IsADirectoryError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+
+    log_path = Path(args.log) if args.log is not None else Path("deed_extractor.log")
+
+    try:
+        calls = extract_calls_with_model(model_choice, text_value, log_path=log_path)
+    except NoCallsFoundError as exc:
+        message_lines = [str(exc)]
+        if exc.log_path is not None:
+            message_lines.append(f"Extraction log written to: {exc.log_path}")
+        print("\n".join(message_lines), file=sys.stderr)
+        return 2
+    except RuntimeError as exc:
+        print(str(exc), file=sys.stderr)
+        return 3
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Unexpected extraction failure", exc_info=True)
+        print(f"Extraction failed: {exc}", file=sys.stderr)
+        return 1
+
+    if not calls:
+        print("No deed calls were found.", file=sys.stderr)
+        return 2
+
+    df = pd.DataFrame(calls)
+    if not df.empty:
+        df = df.rename(
+            columns={
+                "text": "RawCall",
+                "start": "CharStart",
+                "end": "CharEnd",
+                "label": "Label",
+                "source": "Extractor",
+            }
+        )
+
+    if args.out is not None:
         try:
-            validate_training_corpus(
-                args.data,
-                lang=getattr(args, "lang", None),
-            )
-        except Exception as exc:
-            print(f"Training data validation failed: {exc}", file=sys.stderr)
-            return 1
-        return 0
-    if args.check_model:
-        check_saved_deed_model(args.model_path)
-        return 0
-    if args.text is not None:
-        try:
-            calls = extract_calls_hybrid(
-                args.text,
-                log_path=args.log_file,
-            )
-        except NoCallsFoundError as exc:
-            message_lines = [str(exc)]
-            if exc.log_path is not None:
-                message_lines.append(f"Extraction log written to: {exc.log_path}")
-            print("\n".join(message_lines), file=sys.stderr)
-            return 2
-        if args.out is not None:
-            try:
-                import pandas as pd
-            except Exception as exc:
-                print(f"Cannot write Excel output without pandas: {exc}", file=sys.stderr)
-                return 1
-            df = pd.DataFrame(calls)
-            try:
+            if args.template is not None:
+                write_calls_xlsx(df, args.template, args.out)
+            else:
                 df.to_excel(args.out, index=False)
-            except Exception as exc:
-                print(f"Failed to write Excel file {args.out}: {exc}", file=sys.stderr)
-                return 1
-            print(f"Wrote {len(calls)} calls to {args.out}")
-        else:
-            print(json.dumps(calls, indent=2))
-        print(f"Extraction log written to: {args.log_file}")
-        return 0
-    parser.print_help()
+        except FileNotFoundError as exc:
+            print(str(exc), file=sys.stderr)
+            return 3
+        except OSError as exc:
+            print(f"Failed to write Excel file {args.out}: {exc}", file=sys.stderr)
+            return 3
+        except ValueError as exc:
+            print(f"Failed to prepare Excel output: {exc}", file=sys.stderr)
+            return 3
+        print(f"Wrote {len(df)} call(s) to {args.out}")
+    else:
+        print(json.dumps(df.to_dict(orient="records"), indent=2))
+
+    print(f"Extraction log written to: {log_path}")
     return 0
 
 
@@ -1261,6 +1407,7 @@ __all__ = [
     "load_saved_deed_model_meta",
     "check_saved_deed_model",
     "extract_calls_hybrid",
+    "extract_calls_with_model",
     "parse_bearing",
     "normalize_distance",
     "write_calls_xlsx",
