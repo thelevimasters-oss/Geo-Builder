@@ -26,7 +26,9 @@ import os
 import sys, math, re, datetime, shlex, io, traceback, argparse, json, configparser, random, csv, importlib, subprocess, shutil, threading, time, html
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+
+from deed_extractor import iter_windows
 
 TESSERACT_ENV_VARS = (
     "GEO_BUILDER_TESSERACT",
@@ -2068,11 +2070,57 @@ def generate_training_report_html(stats: Dict[str, Any]) -> str:
 def extract_deed_calls_with_model(nlp_model, text: str) -> List[Tuple[str, Tuple[int, int]]]:
     if nlp_model is None or not text:
         return []
-    doc = nlp_model(text)
+    spans: List[Tuple[int, int, str]] = []
+    text_length = len(text)
+    for window_text, offset in iter_windows(text):
+        if not window_text:
+            continue
+        doc = nlp_model(window_text)
+        for ent in getattr(doc, "ents", ()):  # type: ignore[attr-defined]
+            if ent.label_ != "DEED_CALL":
+                continue
+            start = offset + int(ent.start_char)
+            end = offset + int(ent.end_char)
+            start = max(0, min(text_length, start))
+            end = max(start, min(text_length, end))
+            spans.append((start, end, ent.label_))
+
+    if not spans:
+        return []
+
+    spans.sort(key=lambda item: (item[0], -(item[1] - item[0])))
+    merged: List[Tuple[int, int, str]] = []
+    seen: Set[Tuple[int, int, str]] = set()
+
+    for start, end, label in spans:
+        key = (start, end, label)
+        if key in seen:
+            continue
+        keep = True
+        to_remove: List[int] = []
+        for idx, existing in enumerate(merged):
+            ex_start, ex_end, ex_label = existing
+            if label != ex_label:
+                continue
+            if start < ex_end and end > ex_start:
+                if (ex_end - ex_start) >= (end - start):
+                    keep = False
+                    break
+                to_remove.append(idx)
+        if not keep:
+            continue
+        for idx in reversed(to_remove):
+            old_start, old_end, old_label = merged.pop(idx)
+            seen.discard((old_start, old_end, old_label))
+        merged.append((start, end, label))
+        seen.add(key)
+
+    merged.sort(key=lambda item: (item[0], item[1]))
     calls: List[Tuple[str, Tuple[int, int]]] = []
-    for ent in doc.ents:
-        if ent.label_ == "DEED_CALL":
-            calls.append((ent.text.strip(), (ent.start_char, ent.end_char)))
+    for start, end, _ in merged:
+        snippet_raw = text[start:end]
+        snippet = snippet_raw.strip() or snippet_raw
+        calls.append((snippet, (start, end)))
     return calls
 
 _CHAR_NORMALIZE_MAP = {
