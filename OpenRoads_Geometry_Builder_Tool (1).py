@@ -3528,24 +3528,53 @@ class App(BaseTk):
                 self.ai_output_text.insert("end", f"{idx}. {text_value}\n    (start: {start}, end: {end})\n\n")
         self.ai_output_text.configure(state="disabled")
 
+    def _log_deed_ai_model_details(self, message: str, model, path: Optional[Path] = None):
+        labels: List[str] = []
+        if model is not None:
+            try:
+                pipe_names = getattr(model, "pipe_names", [])
+            except Exception:
+                pipe_names = []
+            if "ner" in pipe_names:
+                try:
+                    ner = model.get_pipe("ner")
+                    ner_labels = getattr(ner, "labels", None)
+                except Exception:
+                    ner_labels = None
+                if ner_labels:
+                    for label in ner_labels:
+                        if isinstance(label, str) and label not in labels:
+                            labels.append(label)
+        self._log(message)
+        if path is not None:
+            try:
+                resolved = Path(path).resolve()
+            except Exception:
+                resolved = path
+            self._log(f"Deed AI model path: {resolved}")
+        self._log(f"NER labels: {labels}")
+
     def _get_or_load_deed_ai_model(self):
         if spacy is None:
             return None
         if self.deed_ai_model is not None:
             return self.deed_ai_model
+        model_message: Optional[str] = None
+        model_path: Optional[Path] = None
         if self.deed_ai_model_path.exists():
             try:
                 self.deed_ai_model = spacy.load(self.deed_ai_model_path)
                 ensure_spacy_lexeme_norm(self.deed_ai_model, logger=self._log)
-                self._log("Loaded saved deed AI model.")
-                return self.deed_ai_model
+                model_message = "Loaded saved deed AI model."
+                model_path = self.deed_ai_model_path
+                # ``model_message`` logged after labels ensured below.
             except Exception as exc:
                 self._log(f"Failed to load saved model: {exc}")
-        if ensure_spacy_model():
+        if self.deed_ai_model is None and ensure_spacy_model():
             try:
                 self.deed_ai_model = spacy.load("en_core_web_sm")
                 ensure_spacy_lexeme_norm(self.deed_ai_model, logger=self._log)
-                self._log("Loaded spaCy en_core_web_sm model as fallback.")
+                model_message = "Loaded spaCy en_core_web_sm model as fallback."
             except Exception as exc:
                 self._log(f"Failed to load en_core_web_sm: {exc}")
                 self.deed_ai_model = None
@@ -3553,7 +3582,7 @@ class App(BaseTk):
             self.deed_ai_model = spacy.blank("en")
             if self.deed_ai_model is not None:
                 ensure_spacy_lexeme_norm(self.deed_ai_model, logger=self._log)
-                self._log("Initialized blank spaCy English model. Training is recommended before analysis.")
+                model_message = "Initialized blank spaCy English model. Training is recommended before analysis."
         if self.deed_ai_model is not None:
             if "ner" not in self.deed_ai_model.pipe_names:
                 ner = self.deed_ai_model.add_pipe("ner")
@@ -3564,6 +3593,8 @@ class App(BaseTk):
                     ner.add_label("DEED_CALL")
                 except Exception:
                     pass
+            if model_message:
+                self._log_deed_ai_model_details(model_message, self.deed_ai_model, path=model_path)
         return self.deed_ai_model
 
     def _build_call_tab(self, parent):

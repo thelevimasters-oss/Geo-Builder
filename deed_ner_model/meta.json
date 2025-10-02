@@ -1,0 +1,24 @@
+{
+  "lang": "en",
+  "name": "deed_call_detector",
+  "version": "1.0.0",
+  "pipeline": [
+    "ner"
+  ],
+  "components": {
+    "ner": {
+      "factory": "ner",
+      "labels": [
+        "DEED_CALL"
+      ]
+    }
+  },
+  "labels": {
+    "ner": [
+      "DEED_CALL"
+    ]
+  },
+  "description": "Trained entity recognizer for locating deed call spans.",
+  "author": "PlotClonjurer AI",
+  "source": "Provided with Geo-Builder"
+}
